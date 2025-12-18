@@ -178,6 +178,101 @@ class Compiler:
 
         return True
 
+    def compile_files(self, input_paths: list[Path], output_path: Path | None = None) -> bool:
+        """
+        Compile multiple PL/M-80 source files together.
+
+        All files are parsed first, then a unified call graph is built
+        across all modules for optimal local variable storage allocation.
+
+        Returns True on success, False on failure.
+        """
+        if len(input_paths) == 1:
+            return self.compile_file(input_paths[0], output_path)
+
+        try:
+            modules = []
+            filenames = []
+
+            # Phase 1 & 2: Lex and parse all files
+            for input_path in input_paths:
+                try:
+                    source = input_path.read_text()
+                except OSError as e:
+                    print(f"Error reading {input_path}: {e}", file=sys.stderr)
+                    return False
+
+                filename = str(input_path)
+                filenames.append(filename)
+
+                if self.debug:
+                    print(f"[DEBUG] Phase 1: Lexing {filename}", file=sys.stderr)
+
+                lexer = Lexer(source, filename)
+                for symbol in self.defines:
+                    lexer.define_symbol(symbol)
+                tokens = lexer.tokenize()
+
+                if self.debug:
+                    print(f"[DEBUG] Phase 2: Parsing {filename}", file=sys.stderr)
+
+                parser = Parser(tokens, filename)
+                ast = parser.parse_module()
+
+                # Phase 3: AST Optimization
+                if self.opt_level > 0:
+                    if self.debug:
+                        print(f"[DEBUG] Phase 3: AST Optimization for {filename}", file=sys.stderr)
+                    optimizer = ASTOptimizer(self.opt_level)
+                    ast = optimizer.optimize(ast)
+
+                modules.append(ast)
+
+            # Phase 4: Code Generation with unified call graph
+            if self.debug:
+                print(f"[DEBUG] Phase 4: Code Generation (multi-module, {len(modules)} files)", file=sys.stderr)
+
+            codegen = CodeGenerator(self.target, self.mode)
+            asm_code = codegen.generate_multi(modules)
+
+            if self.debug:
+                print(f"[DEBUG] Generated {len(asm_code.splitlines())} lines of assembly", file=sys.stderr)
+
+            # Phase 5: Peephole Optimization
+            if self.opt_level > 0:
+                if self.debug:
+                    print("[DEBUG] Phase 5: Peephole Optimization", file=sys.stderr)
+
+                peep_target = PeepholeTarget.Z80 if self.target == Target.Z80 else PeepholeTarget.I8080
+                peephole = PeepholeOptimizer(peep_target, input_syntax=InputSyntax.I8080)
+                asm_code = peephole.optimize(asm_code)
+
+            # Phase 6: Post-Assembly Optimization
+            if self.opt_level >= 2:
+                if self.debug:
+                    print("[DEBUG] Phase 6: Post-Assembly Optimization", file=sys.stderr)
+                asm_code, savings = postopt_optimize(asm_code, verbose=self.debug)
+
+            # Determine output path
+            if output_path is None:
+                output_path = input_paths[0].with_suffix(".mac")
+
+            # Write output
+            try:
+                output_path.write_text(asm_code)
+                files_str = ', '.join(str(p) for p in input_paths)
+                print(f"Compiled {files_str} -> {output_path}")
+            except OSError as e:
+                print(f"Error writing {output_path}: {e}", file=sys.stderr)
+                return False
+
+            return True
+
+        except CompilerError as e:
+            self.errors.add_error(e)
+            self.errors.report()
+            return False
+
 
 def main() -> None:
     """Main entry point for the uplm80 compiler."""
@@ -195,7 +290,8 @@ def main() -> None:
     parser.add_argument(
         "input",
         type=Path,
-        help="Input PL/M-80 source file (.plm)",
+        nargs='+',
+        help="Input PL/M-80 source file(s) (.plm)",
     )
 
     parser.add_argument(
@@ -267,8 +363,8 @@ def main() -> None:
         defines=args.defines,
     )
 
-    # Compile
-    success = compiler.compile_file(args.input, args.output)
+    # Compile (supports multiple input files)
+    success = compiler.compile_files(args.input, args.output)
 
     sys.exit(0 if success else 1)
 
