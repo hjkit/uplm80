@@ -37,6 +37,12 @@ cpmemu program.com arg1 arg2      # Run with arguments
    python -m uplm80.compiler input.plm -m bare -o output.mac   # Bare metal mode
    ```
 
+   **Multi-file compilation** (for cross-module optimization):
+   ```bash
+   python -m uplm80.compiler main.plm helper.plm lib.plm -o output.mac
+   ```
+   All files are parsed together, building a unified call graph for optimal local variable storage allocation across module boundaries.
+
    Options:
    - `-m cpm` - CP/M mode (default): For new PL/M programs, maximum stack under BDOS
    - `-m bare` - Bare metal mode: Original Digital Research compatible (jump to start-3)
