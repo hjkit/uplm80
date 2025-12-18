@@ -3284,22 +3284,6 @@ class CodeGenerator:
         if isinstance(expr, UnaryExpr):
             # Unary ops on simple expressions don't touch DE
             return self._expr_preserves_de(expr.operand)
-        if isinstance(expr, CallExpr):
-            # Check for SHL/SHR with constant shift - these don't touch DE
-            if isinstance(expr.callee, Identifier):
-                name = expr.callee.name.upper()
-                if name in ('SHL', 'SHR') and len(expr.args) == 2:
-                    # Check if shift amount is constant
-                    shift_arg = expr.args[1]
-                    is_const_shift = False
-                    if isinstance(shift_arg, NumberLiteral):
-                        is_const_shift = True
-                    elif isinstance(shift_arg, Identifier) and shift_arg.name in self.literal_macros:
-                        is_const_shift = True
-                    if is_const_shift:
-                        # SHL/SHR with constant shift only touches HL and C
-                        # Check if the value arg preserves DE
-                        return self._expr_preserves_de(expr.args[0])
         # Complex expressions (BinaryExpr, SubscriptExpr, CallExpr, etc.)
         # may touch DE
         return False
@@ -4909,21 +4893,14 @@ class CodeGenerator:
                     remaining = shift_count - 8
                     for _ in range(remaining):
                         self._emit("DAD", "H")  # HL *= 2
-                elif shift_count <= 4:
-                    # Small shifts: inline DAD H
+                else:
+                    # Inline DAD H for shifts 1-7 (1 byte each, no loop overhead)
                     for _ in range(shift_count):
                         self._emit("DAD", "H")  # HL *= 2
-                else:
-                    # For 5-7 shifts, use a counted loop
-                    self._emit("MVI", f"C,{shift_count}")
-                    shift_loop = self._new_label("SHL")
-                    end_label = self._new_label("SHLE")
-                    self._emit_label(shift_loop)
-                    self._emit("DCR", "C")
-                    self._emit("JM", end_label)
-                    self._emit("DAD", "H")
-                    self._emit("JMP", shift_loop)
-                    self._emit_label(end_label)
+                # TODO: Investigate root cause. MUL16 zeroes DE as side effect,
+                # and some code path relies on this. Without this LXI D,0,
+                # strength-reduced multiplications fail. See tests/bug_80un.plm.
+                self._emit("LXI", "D,0")
                 return DataType.ADDRESS
 
             # Variable shift - use loop
