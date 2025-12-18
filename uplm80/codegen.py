@@ -584,6 +584,12 @@ class CodeGenerator:
                     calls.add(callee)
             for arg in expr.args:
                 self._find_calls_in_expr(arg, current_proc, calls)
+        elif isinstance(expr, Identifier):
+            # In PL/M-80, a bare identifier that refers to a typed procedure
+            # is an implicit call (e.g., RESULT = MYFUNC; calls MYFUNC)
+            callee = self._resolve_proc_name(expr.name, current_proc)
+            if callee:
+                calls.add(callee)
         elif isinstance(expr, BinaryExpr):
             self._find_calls_in_expr(expr.left, current_proc, calls)
             self._find_calls_in_expr(expr.right, current_proc, calls)
