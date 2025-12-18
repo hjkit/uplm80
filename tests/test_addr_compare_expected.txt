@@ -1,30 +1,30 @@
 ADDRESS Comparison Tests
 ========================
 
-lt_basic 1
-gt_basic 1
-le_basic 1
-ge_basic 1
-sign_lt1 1
-sign_gt1 1
-sign_lt2 1
-sign_gt2 1
-large_lt1 1
-large_gt1 1
-max_lt1 1
-max_gt1 1
-zero_lt1 1
-eq_le1 1
-eq_ge1 1
-eq_le2 1
-eq_ge2 1
-val_lt1 255
-val_lt2 0
-val_lt3 255
-val_gt1 0
-loop_cnt1 5
-loop_cnt2 100
-loop_cnt3 5
-loop_val3 5
+lt_basic  1
+gt_basic  1
+le_basic  1
+ge_basic  1
+sign_lt1  1
+sign_gt1  1
+sign_lt2  1
+sign_gt2  1
+large_lt1  1
+large_gt1  1
+max_lt1  1
+max_gt1  1
+zero_lt1  1
+eq_le1  1
+eq_ge1  1
+eq_le2  1
+eq_ge2  1
+val_lt1  255
+val_lt2  0
+val_lt3  255
+val_gt1  0
+loop_cnt1  5
+loop_cnt2  100
+loop_cnt3  5
+loop_val3  5
 
 Done.

@@ -1,29 +1,29 @@
 DATA Declaration Tests
 ======================
 
-proc_str0 80
-proc_str1 82
-proc_b0 1
-proc_b2 3
-proc_b4 5
-mod_str0 77
-mod_str1 79
-mod_b0 10
-mod_b2 30
-mod_b4 50
-mod_mix0 65
-mod_mix2 100
-mod_init0 11
-mod_init2 33
-mod_init4 55
-zero0 0
-zero1 0
-max0 255
-max2 253
-spec0 13
-spec1 10
-tbl_i0 100
-tbl_i2 102
-tbl_i4 104
+proc_str0  80
+proc_str1  82
+proc_b0  1
+proc_b2  3
+proc_b4  5
+mod_str0  77
+mod_str1  79
+mod_b0  10
+mod_b2  30
+mod_b4  50
+mod_mix0  65
+mod_mix2  100
+mod_init0  11
+mod_init2  33
+mod_init4  55
+zero0  0
+zero1  0
+max0  255
+max2  253
+spec0  13
+spec1  10
+tbl_i0  100
+tbl_i2  102
+tbl_i4  104
 
 Done.

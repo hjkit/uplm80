@@ -1,21 +1,21 @@
 DJNZ Loop Tests
 ===============
 
-djnz_s1 5
-djnz_s2 10
-djnz_add1 15
-djnz_add2 50
-djnz_add3 3000
-djnz_mul1 32
-djnz_mul2 75
-djnz_div1 125
-djnz_div2 100
-djnz_nest1 25
-djnz_nest2 120
-djnz_call1 50
-djnz_var1 6
-djnz_var2 400
-djnz_e1 1
-djnz_e2 255
+djnz_s1  5
+djnz_s2  10
+djnz_add1  15
+djnz_add2  50
+djnz_add3  3000
+djnz_mul1  32
+djnz_mul2  75
+djnz_div1  125
+djnz_div2  100
+djnz_nest1  25
+djnz_nest2  120
+djnz_call1  50
+djnz_var1  6
+djnz_var2  400
+djnz_e1  1
+djnz_e2  255
 
 Done.

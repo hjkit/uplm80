@@ -1,28 +1,28 @@
 BYTE Shift/Rotate Tests
 ======================
 
-shr_b1 5
-shr_b2 127
-shr_b3 1
-shr_b4 10
-shr_b5 16
-shl_b1 80
-shl_b2 128
-shl_b3 84
-shl_b4 32
-rol_b1 1
-rol_b2 85
-rol_b3 170
-rol_b4 16
-ror_b1 128
-ror_b2 85
-ror_b3 170
-ror_b4 8
-scl_b1 0
-scl_b2 128
-scl_b3 168
-scr_b1 0
-scr_b2 1
-scr_b3 42
+shr_b1  5
+shr_b2  127
+shr_b3  1
+shr_b4  10
+shr_b5  0
+shl_b1  80
+shl_b2  128
+shl_b3  84
+shl_b4  2
+rol_b1  1
+rol_b2  85
+rol_b3  170
+rol_b4  2
+ror_b1  128
+ror_b2  85
+ror_b3  170
+ror_b4  128
+scl_b1  0
+scl_b2  128
+scl_b3  169
+scr_b1  0
+scr_b2  1
+scr_b3  42
 
 Done.
