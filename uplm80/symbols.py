@@ -51,6 +51,8 @@ class Symbol:
     scope_level: int = 0
     # Mangled assembly name (for register conflicts)
     asm_name: str | None = None
+    # Stack offset for reentrant procedure locals (IX+offset)
+    stack_offset: int | None = None
 
 
 @dataclass

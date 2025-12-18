@@ -1367,9 +1367,9 @@ class ASTOptimizer:
         if name == "HIGH" and isinstance(args[0], NumberLiteral):
             return NumberLiteral((args[0].value >> 8) & 0xFF, span=args[0].span)
 
-        # DOUBLE(const) -> const (already 16-bit conceptually)
+        # DOUBLE(const) -> const * 256 (byte moved to high position)
         if name == "DOUBLE" and isinstance(args[0], NumberLiteral):
-            return NumberLiteral(args[0].value & 0xFFFF, span=args[0].span)
+            return NumberLiteral((args[0].value * 256) & 0xFFFF, span=args[0].span)
 
         # SHL(const, const)
         if name == "SHL" and len(args) == 2:

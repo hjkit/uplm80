@@ -1082,9 +1082,16 @@ class CodeGenerator:
         # Mangle name if it conflicts with register names
         base_name = self._mangle_name(decl.name)
 
+        # Check if we're in a reentrant procedure - locals go on stack
+        in_reentrant = (self.current_proc_decl is not None and
+                        self.current_proc_decl.is_reentrant and
+                        not decl.is_public and not decl.is_external and
+                        not decl.based_on and not decl.at_location and
+                        not decl.data_values and not decl.initial_values)
+
         # Check if this is a procedure local that can use shared storage
         use_shared = False
-        if (self.current_proc and not decl.is_public and not decl.is_external
+        if (not in_reentrant and self.current_proc and not decl.is_public and not decl.is_external
             and not decl.based_on and not decl.at_location and not decl.data_values
             and not decl.initial_values):
             # Check if we have shared storage for this proc and var
@@ -1094,12 +1101,14 @@ class CodeGenerator:
                 asm_name = self.storage_labels[self.current_proc][decl.name]
                 use_shared = True
 
-        if not use_shared:
+        if not use_shared and not in_reentrant:
             # For non-public local variables in procedures, prefix with scope name to avoid conflicts
             if self.current_proc and not decl.is_public and not decl.is_external:
                 asm_name = f"@{self.current_proc}${base_name}"
             else:
                 asm_name = base_name
+        elif in_reentrant:
+            asm_name = None  # Will use stack_offset instead
 
         # Calculate size
         if decl.struct_members:
@@ -1113,6 +1122,14 @@ class CodeGenerator:
             count = decl.dimension or 1
             size = elem_size * count
 
+        # For reentrant procedures, allocate stack space for locals
+        stack_offset = None
+        if in_reentrant:
+            # Locals are at negative offsets from IX
+            # Decrement offset first, then use it (so first local is at IX-size)
+            self._reentrant_local_offset -= size
+            stack_offset = self._reentrant_local_offset
+
         # Record in symbol table (with mangled name for asm output)
         sym = Symbol(
             name=decl.name,
@@ -1124,7 +1141,8 @@ class CodeGenerator:
             is_public=decl.is_public,
             is_external=decl.is_external,
             size=size,
-            asm_name=asm_name,  # Store mangled name
+            asm_name=asm_name,  # Store mangled name (None for reentrant locals)
+            stack_offset=stack_offset,  # Stack offset for reentrant locals
         )
         self.symbols.define(sym)
 
@@ -1196,6 +1214,9 @@ class CodeGenerator:
             self._emit_initial_values(decl.initial_values, decl.data_type or DataType.BYTE)
         elif use_shared:
             # Using shared automatic storage - no individual allocation needed
+            pass
+        elif in_reentrant:
+            # Reentrant locals are on the stack - no static allocation needed
             pass
         else:
             # Uninitialized storage
@@ -1363,9 +1384,39 @@ class CodeGenerator:
 
         # Define parameters as local variables
         # For non-reentrant: use shared automatic storage via storage_labels
-        # For reentrant: use individual storage (stack-based)
+        # For reentrant: use IX-relative stack frame
         param_infos: list[tuple[str, str, DataType, int]] = []  # (name, asm_name, type, size)
         use_shared_storage = not decl.is_reentrant and full_proc_name in self.storage_labels
+
+        # For reentrant procedures, set up IX frame pointer first
+        # Stack at entry: [params...][ret_addr] <- SP
+        # After PUSH IX: [params...][ret_addr][saved_IX] <- SP, IX
+        if decl.is_reentrant:
+            self._emit("PUSH", "IX")
+            self._emit("LD", "IX,0")
+            self._emit("ADD", "IX,SP")
+
+        # Calculate parameter offsets for reentrant procedures
+        # Stack after PUSH IX: [params...][ret_addr(2)][saved_IX(2)] <- IX
+        # First param is at IX+4, subsequent params at higher offsets
+        # Parameters are pushed in order: first arg pushed first, ends up deepest
+        # So params[0] is at the highest offset, params[-1] is at IX+4
+        reentrant_param_offset = 4  # Start after saved IX (2) and ret addr (2)
+        if decl.is_reentrant:
+            # Calculate total params size to compute offsets
+            # Params are pushed first-to-last, so on stack: [param0][param1]...[paramN][ret][IX]
+            # paramN is at IX+4, param(N-1) is at IX+4+size(paramN), etc.
+            param_sizes = []
+            for param in decl.params:
+                param_type = DataType.ADDRESS  # Default
+                for d in decl.decls:
+                    if isinstance(d, VarDecl) and d.name == param:
+                        param_type = d.data_type or DataType.ADDRESS
+                        break
+                param_sizes.append(2)  # All stack slots are 2 bytes (pushed as 16-bit)
+            # Compute offset for each param (last param is at IX+4)
+            total_params_size = sum(param_sizes)
+            reentrant_param_offset = 4 + total_params_size - param_sizes[-1] if param_sizes else 4
 
         for i, param in enumerate(decl.params):
             # Find parameter declaration in decl.decls
@@ -1377,27 +1428,45 @@ class CodeGenerator:
 
             param_size = 1 if param_type == DataType.BYTE else 2
 
-            # Get asm_name from shared storage or create individual
-            if use_shared_storage and param in self.storage_labels.get(full_proc_name, {}):
-                asm_name = self.storage_labels[full_proc_name][param]
-            else:
-                # Fallback: individual storage (for reentrant or if not in storage_labels)
-                asm_name = f"@{decl.name}${self._mangle_name(param)}"
-                # Allocate individual storage in data segment
-                self.data_segment.append(
-                    AsmLine(label=asm_name, opcode="DS", operands=str(param_size))
-                )
+            if decl.is_reentrant:
+                # Use stack frame - params accessed via IX+offset
+                # First param (params[0]) is at highest offset
+                # Each subsequent param is 2 bytes lower (all pushed as 16-bit)
+                stack_offset = reentrant_param_offset
+                reentrant_param_offset -= 2  # Move to next param (all slots are 2 bytes)
 
-            self.symbols.define(
-                Symbol(
-                    name=param,
-                    kind=SymbolKind.PARAMETER,
-                    data_type=param_type,
-                    size=param_size,
-                    asm_name=asm_name,
+                self.symbols.define(
+                    Symbol(
+                        name=param,
+                        kind=SymbolKind.PARAMETER,
+                        data_type=param_type,
+                        size=param_size,
+                        stack_offset=stack_offset,
+                    )
                 )
-            )
-            param_infos.append((param, asm_name, param_type, param_size))
+                param_infos.append((param, None, param_type, param_size))
+            else:
+                # Get asm_name from shared storage or create individual
+                if use_shared_storage and param in self.storage_labels.get(full_proc_name, {}):
+                    asm_name = self.storage_labels[full_proc_name][param]
+                else:
+                    # Fallback: individual storage
+                    asm_name = f"@{decl.name}${self._mangle_name(param)}"
+                    # Allocate individual storage in data segment
+                    self.data_segment.append(
+                        AsmLine(label=asm_name, opcode="DS", operands=str(param_size))
+                    )
+
+                self.symbols.define(
+                    Symbol(
+                        name=param,
+                        kind=SymbolKind.PARAMETER,
+                        data_type=param_type,
+                        size=param_size,
+                        asm_name=asm_name,
+                    )
+                )
+                param_infos.append((param, asm_name, param_type, param_size))
 
         # Generate prologue code for register parameter (last param in A or HL)
         # For non-reentrant procedures, the last param is passed in register and needs to be stored
@@ -1410,25 +1479,8 @@ class CodeGenerator:
                 # Last param came in HL - store it
                 self._emit("SHLD", last_asm_name)
 
-        # Generate prologue code to copy parameters from stack to local storage
-        # Only needed for reentrant procedures - non-reentrant have params stored directly by caller
-        if param_infos and decl.is_reentrant:
-            # Get stack pointer into HL
-            # Stack: [ret addr (2)] [params...]
-            # We need to access params without destroying return address
-            self._emit("POP", "H")  # HL = return address
-            for param_name, asm_name, param_type, param_size in param_infos:
-                if param_size == 1:
-                    self._emit("POP", "D")  # Get param value (only low byte valid)
-                    self._emit("MOV", "A,E")
-                    self._emit("STA", asm_name)
-                else:
-                    self._emit("POP", "D")  # Get param value
-                    self._emit("XCHG")  # HL <-> DE
-                    self._emit("SHLD", asm_name)
-                    self._emit("XCHG")  # Restore return address to HL
-            self._emit("PUSH", "H")  # Push return address back
-            # Note: This changes the stack - caller must not expect params on stack after return
+        # Track locals offset for reentrant procedures (negative from IX)
+        self._reentrant_local_offset = 0  # Will be decremented as locals are allocated
 
         # Generate code for local declarations (skip parameters and nested procedures)
         nested_procs: list[ProcDecl] = []
@@ -1456,6 +1508,14 @@ class CodeGenerator:
                         self._gen_declaration(inner_decl)
             else:
                 statements_to_gen.append(stmt)
+
+        # For reentrant procedures, allocate stack space for locals
+        if decl.is_reentrant and self._reentrant_local_offset < 0:
+            # Allocate stack space: SP = SP + offset (offset is negative)
+            # LD HL,offset; ADD HL,SP; LD SP,HL
+            self._emit("LD", f"HL,{self._reentrant_local_offset}")
+            self._emit("ADD", "HL,SP")
+            self._emit("LD", "SP,HL")
 
         # Generate code for statements with liveness tracking
         ends_with_return = False
@@ -1486,6 +1546,13 @@ class CodeGenerator:
             self._emit("POP", "B")
             self._emit("POP", "PSW")
             self._emit("EI")
+            self._emit("RET")
+        elif decl.is_reentrant:
+            # Restore stack pointer and frame pointer for reentrant procedures
+            # LD SP,IX restores SP to point to saved IX
+            # POP IX restores the old frame pointer
+            self._emit("LD", "SP,IX")
+            self._emit("POP", "IX")
             self._emit("RET")
         else:
             self._emit("RET")
@@ -1835,15 +1902,21 @@ class CodeGenerator:
                 if (self.current_proc_decl and
                     self.current_proc_decl.return_type == DataType.BYTE and
                     result_type == DataType.ADDRESS):
-                    # Convert HL to A: non-zero HL -> 1, zero HL -> 0
+                    # Convert HL to A: non-zero HL -> 0FFH (TRUE), zero HL -> 0 (FALSE)
                     self._emit("MOV", "A,L")
                     self._emit("ORA", "H")
                     # Now A is non-zero if true, zero if false
-                    # For proper TRUE (1), normalize:
+                    # For proper PL/M TRUE (0FFH), normalize:
                     end_label = self._new_label("RETE")
                     self._emit("JZ", end_label)
-                    self._emit("MVI", "A,1")
+                    self._emit("MVI", "A,0FFH")
                     self._emit_label(end_label)
+                # If procedure returns ADDRESS but we have BYTE, zero-extend A to HL
+                elif (self.current_proc_decl and
+                      self.current_proc_decl.return_type == DataType.ADDRESS and
+                      result_type == DataType.BYTE):
+                    self._emit("MOV", "L,A")
+                    self._emit("MVI", "H,0")
 
         if self.current_proc_decl and self.current_proc_decl.interrupt_num is not None:
             # Interrupt handler return
@@ -1852,8 +1925,14 @@ class CodeGenerator:
             self._emit("POP", "B")
             self._emit("POP", "PSW")
             self._emit("EI")
-
-        self._emit("RET")
+            self._emit("RET")
+        elif self.current_proc_decl and self.current_proc_decl.is_reentrant:
+            # Reentrant procedure return - restore frame pointer
+            self._emit("LD", "SP,IX")
+            self._emit("POP", "IX")
+            self._emit("RET")
+        else:
+            self._emit("RET")
 
     def _gen_if(self, stmt: IfStmt) -> None:
         """Generate code for IF statement."""
@@ -2898,7 +2977,11 @@ class CodeGenerator:
                 return True
             return True  # Assume simple
         if isinstance(expr, LocationExpr):
-            # .VAR is simple - just loads address
+            # .VAR is simple - just loads address, unless it's a stack-based variable
+            if isinstance(expr.operand, Identifier):
+                sym = self.symbols.lookup(expr.operand.name)
+                if sym and sym.stack_offset is not None:
+                    return False  # Stack-based variables need IX+offset calculation
             return True
         return False
 
@@ -2948,6 +3031,12 @@ class CodeGenerator:
                     self._emit("LXI", "D,??MEMORY")
                     return
                 sym = self.symbols.lookup(name)
+                # Check for stack-based variable (reentrant procedure parameter/local)
+                if sym and sym.stack_offset is not None:
+                    # Fall back to gen_expr which handles IX+offset
+                    self._gen_expr(expr)
+                    self._emit("XCHG")
+                    return
                 asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
                 self._emit("LXI", f"D,{asm_name}")
             else:
@@ -3231,6 +3320,17 @@ class CodeGenerator:
                         self._emit("XCHG")
                         return DataType.ADDRESS
 
+                # Check for stack-based variable (reentrant procedure local)
+                if sym.stack_offset is not None:
+                    offset = sym.stack_offset
+                    if sym.data_type == DataType.BYTE:
+                        self._emit("LD", f"A,(IX+{offset})")
+                        return DataType.BYTE
+                    else:
+                        self._emit("LD", f"L,(IX+{offset})")
+                        self._emit("LD", f"H,(IX+{offset + 1})")
+                        return DataType.ADDRESS
+
                 if sym.data_type == DataType.BYTE:
                     self._emit("LDA", asm_name)
                     # Keep BYTE value in A register for efficient byte operations
@@ -3301,12 +3401,35 @@ class CodeGenerator:
                     self._emit("MOV", "M,D")
                 return
 
+            # Check for stack-based variable (reentrant procedure local)
+            if sym and sym.stack_offset is not None:
+                offset = sym.stack_offset
+                if sym.data_type == DataType.BYTE:
+                    # Value may be in A (if val_type==BYTE) or L (if val_type==ADDRESS)
+                    if val_type != DataType.BYTE:
+                        self._emit("MOV", "A,L")
+                    self._emit("LD", f"(IX+{offset}),A")
+                else:
+                    # Target is ADDRESS
+                    if val_type == DataType.BYTE:
+                        # Value is in A, need to zero-extend to HL
+                        self._emit("MOV", "L,A")
+                        self._emit("MVI", "H,0")
+                    self._emit("LD", f"(IX+{offset}),L")
+                    self._emit("LD", f"(IX+{offset + 1}),H")
+                return
+
             if sym and sym.data_type == DataType.BYTE:
                 # Value may be in A (if val_type==BYTE) or L (if val_type==ADDRESS)
                 if val_type != DataType.BYTE:
                     self._emit("MOV", "A,L")
                 self._emit("STA", asm_name)
             else:
+                # Target is ADDRESS
+                if val_type == DataType.BYTE:
+                    # Value is in A, need to zero-extend to HL
+                    self._emit("MOV", "L,A")
+                    self._emit("MVI", "H,0")
                 self._emit("SHLD", asm_name)
 
         elif isinstance(expr, SubscriptExpr):
@@ -3361,12 +3484,28 @@ class CodeGenerator:
                 return
 
             # Array element store
+            # Check element type
+            elem_type = DataType.BYTE
+            if isinstance(expr.base, Identifier):
+                sym = self.symbols.lookup(expr.base.name)
+                if sym and sym.data_type == DataType.ADDRESS:
+                    elem_type = DataType.ADDRESS
+
             self._emit("PUSH", "H")  # Save value
             self._gen_subscript_addr(expr)  # HL = address
             self._emit("XCHG")  # DE = address
             self._emit("POP", "H")  # HL = value
-            self._emit("MOV", "A,L")
-            self._emit("STAX", "D")
+
+            if elem_type == DataType.ADDRESS:
+                # Store 16-bit value
+                self._emit("XCHG")  # HL = address, DE = value
+                self._emit("MOV", "M,E")
+                self._emit("INX", "H")
+                self._emit("MOV", "M,D")
+            else:
+                # Store BYTE value
+                self._emit("MOV", "A,L")
+                self._emit("STAX", "D")
 
         elif isinstance(expr, MemberExpr):
             # Structure member store
@@ -3469,35 +3608,58 @@ class CodeGenerator:
                     if isinstance(expr.args[0], NumberLiteral) and not sym.based_on:
                         # Constant index - can compute address directly
                         asm_name = sym.asm_name if sym.asm_name else self._mangle_name(expr.callee.name)
-                        offset = expr.args[0].value
-                        if val_type == DataType.BYTE:
-                            # Value already in A
+                        # Check element type
+                        elem_type = sym.data_type if sym else DataType.BYTE
+                        elem_size = 2 if elem_type == DataType.ADDRESS else 1
+                        offset = expr.args[0].value * elem_size
+
+                        if elem_type == DataType.ADDRESS:
+                            # Store 16-bit value (value in HL)
+                            if val_type == DataType.BYTE:
+                                # Expand BYTE to ADDRESS
+                                self._emit("MOV", "L,A")
+                                self._emit("MVI", "H,0")
                             if offset == 0:
-                                self._emit("STA", asm_name)
+                                self._emit("SHLD", asm_name)
                             else:
-                                self._emit("STA", f"{asm_name}+{offset}")
+                                # Need to store at offset - use LXI D, addr; then store via D
+                                self._emit("LXI", f"D,{asm_name}+{offset}")
+                                self._emit("XCHG")  # HL = address, DE = value
+                                self._emit("MOV", "M,E")
+                                self._emit("INX", "H")
+                                self._emit("MOV", "M,D")
                         else:
-                            # Value in HL, need low byte
-                            self._emit("MOV", "A,L")
+                            # Store BYTE value (value in A)
+                            if val_type != DataType.BYTE:
+                                self._emit("MOV", "A,L")  # Get low byte
                             if offset == 0:
                                 self._emit("STA", asm_name)
                             else:
                                 self._emit("STA", f"{asm_name}+{offset}")
                     else:
                         # Variable index - need to compute address
-                        if val_type == DataType.BYTE:
+                        elem_type = sym.data_type if sym else DataType.BYTE
+                        if elem_type == DataType.ADDRESS:
+                            # ADDRESS array - need to store 16-bit value
+                            if val_type == DataType.BYTE:
+                                # Expand BYTE (in A) to ADDRESS (in HL)
+                                self._emit("MOV", "L,A")
+                                self._emit("MVI", "H,0")
+                            # Value in HL - save it, compute address, store
+                            self._emit("PUSH", "H")  # Save value
+                            self._gen_subscript_addr(subscript)  # HL = address
+                            self._emit("POP", "D")  # DE = value
+                            self._emit("MOV", "M,E")  # Store low byte at (HL)
+                            self._emit("INX", "H")
+                            self._emit("MOV", "M,D")  # Store high byte at (HL+1)
+                        else:
+                            # BYTE array - store single byte
+                            if val_type != DataType.BYTE:
+                                self._emit("MOV", "A,L")  # Get low byte from ADDRESS
                             # Value in A - save it, compute address, store
                             self._emit("MOV", "B,A")  # Save value in B
                             self._gen_subscript_addr(subscript)  # HL = address
                             self._emit("MOV", "M,B")  # Store value
-                        else:
-                            # Value in HL - save it, compute address, store
-                            self._emit("PUSH", "H")  # Save value
-                            self._gen_subscript_addr(subscript)  # HL = address
-                            self._emit("XCHG")  # DE = address
-                            self._emit("POP", "H")  # HL = value
-                            self._emit("MOV", "A,L")
-                            self._emit("STAX", "D")
                     return
 
             # Unknown call target - fall through to complex store
@@ -3766,7 +3928,8 @@ class CodeGenerator:
 
         elif op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT,
                    BinaryOp.LE, BinaryOp.GE):
-            self._gen_comparison(op)
+            # Comparison returns result in A (BYTE), not HL
+            return self._gen_comparison(op)
 
         elif op == BinaryOp.PLUS:
             # PLUS: add with carry from previous operation
@@ -3789,8 +3952,9 @@ class CodeGenerator:
         return DataType.ADDRESS
 
     def _gen_comparison(self, op: BinaryOp) -> DataType:
-        """Generate code for comparison. HL=left, DE=right. Result in A (0 or 1)."""
+        """Generate code for comparison. HL=left, DE=right. Result in A (0 or 0FFH)."""
         true_label = self._new_label("TRUE")
+        false_label = self._new_label("FALSE")
         end_label = self._new_label("CMP")
 
         # Subtract: HL = HL - DE, flags set from high byte subtraction
@@ -3812,7 +3976,7 @@ class CodeGenerator:
             self._emit("JNC", true_label)
         elif op == BinaryOp.GT:
             # left > right: no borrow AND not equal
-            self._emit("JC", end_label)  # If left < right, false
+            self._emit("JC", false_label)  # If left < right, false
             self._emit("MOV", "A,L")
             self._emit("ORA", "H")
             self._emit("JNZ", true_label)  # If not equal, left > right
@@ -3823,12 +3987,13 @@ class CodeGenerator:
             self._emit("JZ", true_label)  # left == right
 
         # False case - return 0 in A
+        self._emit_label(false_label)
         self._emit("XRA", "A")
         self._emit("JMP", end_label)
 
-        # True case - return 1 in A
+        # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,1")
+        self._emit("MVI", "A,0FFH")
 
         self._emit_label(end_label)
         return DataType.BYTE
@@ -3905,12 +4070,12 @@ class CodeGenerator:
         self._emit("XRA", "A")
         self._emit("JMP", end_label)
 
-        # True case - return 1 in A
+        # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,1")
+        self._emit("MVI", "A,0FFH")
 
         self._emit_label(end_label)
-        return DataType.BYTE  # Comparisons return BYTE (0 or 1)
+        return DataType.BYTE  # Comparisons return BYTE (0 or 0FFH)
 
     def _gen_byte_comparison(self, left: Expr, right: Expr, op: BinaryOp) -> DataType:
         """Generate optimized byte comparison between two byte values."""
@@ -3945,12 +4110,12 @@ class CodeGenerator:
         self._emit("XRA", "A")
         self._emit("JMP", end_label)
 
-        # True case - return 1 in A
+        # True case - return 0FFH in A (PL/M TRUE = 0FFH)
         self._emit_label(true_label)
-        self._emit("MVI", "A,1")
+        self._emit("MVI", "A,0FFH")
 
         self._emit_label(end_label)
-        return DataType.BYTE  # Comparisons return BYTE (0 or 1)
+        return DataType.BYTE  # Comparisons return BYTE (0 or 0FFH)
 
     def _gen_byte_binary(self, left: Expr, right: Expr, op: BinaryOp) -> DataType:
         """Generate optimized byte arithmetic/logical operation."""
@@ -4053,24 +4218,18 @@ class CodeGenerator:
 
         elif expr.op == UnaryOp.NOT:
             if operand_type == DataType.BYTE:
-                # Boolean NOT: 0 -> 1, nonzero -> 0
+                # Bitwise NOT: complement all bits
                 # A contains the byte value
-                done_label = self._new_label("NOTDONE")
-                self._emit("ORA", "A")        # Set Z if A==0
-                self._emit("MVI", "A,1")      # Assume result = 1 (FALSE -> TRUE)
-                self._emit("JZ", done_label)  # If was 0, result is 1
-                self._emit("XRA", "A")        # Was nonzero, result = 0
-                self._emit_label(done_label)
+                self._emit("CMA")  # A = ~A (bitwise complement)
                 return DataType.BYTE
             else:
-                # Boolean NOT for ADDRESS: 0 -> 1, nonzero -> 0
-                done_label = self._new_label("NOTDONE")
+                # Bitwise NOT for ADDRESS: complement both bytes
                 self._emit("MOV", "A,L")
-                self._emit("ORA", "H")        # Test if HL == 0
-                self._emit("LXI", "H,1")      # Assume result = 1
-                self._emit("JZ", done_label)  # If was 0, result is 1
-                self._emit("LXI", "H,0")      # Was nonzero, result = 0
-                self._emit_label(done_label)
+                self._emit("CMA")
+                self._emit("MOV", "L,A")
+                self._emit("MOV", "A,H")
+                self._emit("CMA")
+                self._emit("MOV", "H,A")
                 return DataType.ADDRESS
 
         elif expr.op == UnaryOp.LOW:
@@ -4103,10 +4262,26 @@ class CodeGenerator:
             call = CallExpr(callee=expr.base, args=[expr.index])
             return self._gen_call_expr(call)
 
+        # Check element type
+        elem_type = DataType.BYTE
+        if isinstance(expr.base, Identifier):
+            sym = self.symbols.lookup(expr.base.name)
+            if sym and sym.data_type == DataType.ADDRESS:
+                elem_type = DataType.ADDRESS
+
         self._gen_subscript_addr(expr)
-        # Load value at address - BYTE value goes in A only
-        self._emit("MOV", "A,M")
-        return DataType.BYTE
+
+        if elem_type == DataType.ADDRESS:
+            # Load 16-bit value: low byte first, then high byte
+            self._emit("MOV", "E,M")
+            self._emit("INX", "H")
+            self._emit("MOV", "D,M")
+            self._emit("XCHG")  # HL = value
+            return DataType.ADDRESS
+        else:
+            # Load BYTE value into A
+            self._emit("MOV", "A,M")
+            return DataType.BYTE
 
     def _gen_subscript_addr(self, expr: SubscriptExpr) -> None:
         """Generate code to compute address of array element."""
@@ -4493,8 +4668,16 @@ class CodeGenerator:
             return DataType.BYTE
 
         if name == "DOUBLE":
-            self._gen_expr(args[0])
-            # Value is already in HL, just ensure H is set
+            # DOUBLE(x) returns x * 256 (byte moved to high position)
+            arg_type = self._gen_expr(args[0])
+            if arg_type == DataType.BYTE:
+                # BYTE value is in A, move to H and clear L
+                self._emit("MOV", "H,A")
+                self._emit("MVI", "L,0")
+            else:
+                # ADDRESS value - shift left by 8 (multiply by 256)
+                self._emit("MOV", "H,L")
+                self._emit("MVI", "L,0")
             return DataType.ADDRESS
 
         if name == "SHL":
@@ -4915,8 +5098,19 @@ class CodeGenerator:
                     return self._gen_location(LocationExpr(operand=Identifier(name=macro_val)))
             # Mangle name if needed
             sym = self.symbols.lookup(name)
-            asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
-            self._emit("LXI", f"H,{asm_name}")
+
+            # Handle reentrant procedure parameters/locals (IX-relative)
+            if sym and sym.stack_offset is not None:
+                # Compute address: HL = IX + offset
+                # PUSH IX; POP HL; LD DE,offset; ADD HL,DE
+                self._emit("PUSH", "IX")
+                self._emit("POP", "HL")
+                if sym.stack_offset != 0:
+                    self._emit("LD", f"DE,{sym.stack_offset}")
+                    self._emit("ADD", "HL,DE")
+            else:
+                asm_name = sym.asm_name if sym and sym.asm_name else self._mangle_name(name)
+                self._emit("LXI", f"H,{asm_name}")
         elif isinstance(operand, SubscriptExpr):
             self._gen_subscript_addr(operand)
         elif isinstance(operand, MemberExpr):
