@@ -13,6 +13,7 @@ PL/M-80 was the primary systems programming language for CP/M and other 8080/Z80
 
 - Full PL/M-80 language support
 - Targets both 8080 and Z80 instruction sets
+- Multi-file compilation with cross-module optimization
 - Multiple optimization passes (peephole, post-assembly tail merging)
 - Generates relocatable object files compatible with standard CP/M linkers
 - Produces code competitive with the original Digital Research compiler
@@ -67,6 +68,22 @@ Options:
 - `-o output.mac` - Output file name
 - `-O 0|1|2|3` - Optimization level (default: 2)
 - `-D SYMBOL` - Define conditional compilation symbol (can be repeated)
+
+### Multi-File Compilation
+
+Compile multiple source files together for optimal cross-module optimization:
+
+```bash
+uplm80 main.plm helper.plm library.plm -o output.mac
+```
+
+When multiple files are provided:
+- All files are parsed together before code generation
+- A unified call graph is built across all modules
+- Local variable storage (`??AUTO`) is optimally allocated based on which procedures can be active simultaneously across module boundaries
+- A single combined output file is generated
+
+This produces better code than compiling files separately, as the compiler can share local variable storage between procedures in different modules that never call each other.
 
 ### Post-Assembly Optimization (Optional)
 
