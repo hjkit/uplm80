@@ -124,6 +124,7 @@ class CodeGenerator:
         self.current_proc_decl: ProcDecl | None = None
         self.loop_stack: list[tuple[str, str]] = []  # (continue_label, break_label)
         self.needs_runtime: set[str] = set()  # Which runtime routines are needed
+        self.needs_end_symbol = False  # Whether __END__ (linker symbol) is needed
         self.literal_macros: dict[str, str] = {}  # LITERALLY macro expansions
         self.block_scope_counter = 0  # Counter for unique DO block scopes
         self.emit_data_inline = False  # If True, DATA goes to code segment
@@ -848,6 +849,7 @@ class CodeGenerator:
         self.code_data_segment = []
         self.string_literals = []
         self.needs_runtime = set()
+        self.needs_end_symbol = False
         self.literal_macros = {}
 
         # Header
@@ -1001,15 +1003,14 @@ class CodeGenerator:
             self._emit("DS", "64")
             self._emit_label("??STACK")  # Label after buffer (top of stack)
 
-        # Emit ??MEMORY label - marks end of program data for .MEMORY built-in
-        # This is the first free byte after all variables, used by programs
-        # to calculate available memory: MAXB - .MEMORY
-        self._emit()
-        self._emit(comment="End of program data")
-        self._emit_label("??MEMORY")
-
         # Note: For CPM mode, stack is provided by CP/M (set from BDOS address at 0006H).
         # For BARE mode, stack storage (??STACK) is emitted above.
+
+        # Emit EXTRN for __END__ if program uses .MEMORY built-in
+        # __END__ is provided by the linker as the first free byte after all code/data
+        if self.needs_end_symbol:
+            self._emit()
+            self._emit("EXTRN", "__END__")
 
         # End directive
         self._emit()
@@ -1032,6 +1033,7 @@ class CodeGenerator:
         self.code_data_segment = []
         self.string_literals = []
         self.needs_runtime = set()
+        self.needs_end_symbol = False
         self.literal_macros = {}
 
         # Header
@@ -1182,10 +1184,11 @@ class CodeGenerator:
             self._emit("DS", "64")
             self._emit_label("??STACK")
 
-        # Emit ??MEMORY label
-        self._emit()
-        self._emit(comment="End of program data")
-        self._emit_label("??MEMORY")
+        # Emit EXTRN for __END__ if program uses .MEMORY built-in
+        # __END__ is provided by the linker as the first free byte after all code/data
+        if self.needs_end_symbol:
+            self._emit()
+            self._emit("EXTRN", "__END__")
 
         # End directive
         self._emit()
@@ -1371,10 +1374,11 @@ class CodeGenerator:
                 # AT location is an address expression
                 loc_operand = decl.at_location.operand
                 if isinstance(loc_operand, Identifier):
-                    # Check for built-in MEMORY - address is 0
+                    # Check for built-in MEMORY - address is __END__ (linker symbol)
                     if loc_operand.name.upper() == "MEMORY":
+                        self.needs_end_symbol = True
                         self.data_segment.append(
-                            AsmLine(label=asm_name, opcode="EQU", operands="0")
+                            AsmLine(label=asm_name, opcode="EQU", operands="__END__")
                         )
                     else:
                         # Reference to another variable - check if external
@@ -3194,7 +3198,8 @@ class CodeGenerator:
             name = expr.name
             # Handle built-in MEMORY array
             if name.upper() == "MEMORY":
-                self._emit("LXI", "D,??MEMORY")
+                self.needs_end_symbol = True
+                self._emit("LXI", "D,__END__")
                 return
             # Check for LITERALLY macro
             if name in self.literal_macros:
@@ -3229,7 +3234,8 @@ class CodeGenerator:
                 name = expr.operand.name
                 # Handle built-in MEMORY array
                 if name.upper() == "MEMORY":
-                    self._emit("LXI", "D,??MEMORY")
+                    self.needs_end_symbol = True
+                    self._emit("LXI", "D,__END__")
                     return
                 sym = self.symbols.lookup(name)
                 # Check for stack-based variable (reentrant procedure parameter/local)
@@ -3620,17 +3626,18 @@ class CodeGenerator:
         elif isinstance(expr, SubscriptExpr):
             # Check for MEMORY(addr) = value special case
             if isinstance(expr.base, Identifier) and expr.base.name.upper() == "MEMORY":
-                # MEMORY(addr) = value - store byte to ??MEMORY + addr
+                # MEMORY(addr) = value - store byte to __END__ + addr
                 # MEMORY is the predeclared byte array starting at end of program
+                self.needs_end_symbol = True
                 self._emit("PUSH", "H")  # Save value
                 if isinstance(expr.index, NumberLiteral) and expr.index.value == 0:
-                    # MEMORY(0) - just use ??MEMORY directly
-                    self._emit("LXI", "H,??MEMORY")
+                    # MEMORY(0) - just use __END__ directly
+                    self._emit("LXI", "H,__END__")
                 else:
-                    # MEMORY(n) - compute ??MEMORY + n
+                    # MEMORY(n) - compute __END__ + n
                     self._gen_expr(expr.index)  # HL = offset
-                    self._emit("LXI", "D,??MEMORY")
-                    self._emit("DAD", "D")  # HL = ??MEMORY + offset
+                    self._emit("LXI", "D,__END__")
+                    self._emit("DAD", "D")  # HL = __END__ + offset
                 self._emit("XCHG")  # DE = address
                 self._emit("POP", "H")  # HL = value
                 self._emit("MOV", "A,L")
@@ -3742,9 +3749,10 @@ class CodeGenerator:
                     self.needs_runtime.add("??OUTP")
                 return
 
-            # Check for MEMORY(addr) = value special case (built-in byte array at ??MEMORY)
+            # Check for MEMORY(addr) = value special case (built-in byte array at __END__)
             if isinstance(expr.callee, Identifier) and expr.callee.name.upper() == "MEMORY" and len(expr.args) == 1:
-                # MEMORY(addr) = value - store byte to ??MEMORY + addr
+                # MEMORY(addr) = value - store byte to __END__ + addr
+                self.needs_end_symbol = True
                 addr_arg = expr.args[0]
                 # Check for constant address
                 addr_val = None
@@ -3757,26 +3765,26 @@ class CodeGenerator:
                         pass
 
                 if addr_val is not None:
-                    # Constant offset - use STA to ??MEMORY+offset
+                    # Constant offset - use STA to __END__+offset
                     if val_type != DataType.BYTE:
                         self._emit("MOV", "A,L")
                     if addr_val == 0:
-                        self._emit("STA", "??MEMORY")
+                        self._emit("STA", "__END__")
                     else:
-                        self._emit("STA", f"??MEMORY+{self._format_number(addr_val)}")
+                        self._emit("STA", f"__END__+{self._format_number(addr_val)}")
                 else:
-                    # Variable offset - compute ??MEMORY + offset, then store
+                    # Variable offset - compute __END__ + offset, then store
                     if val_type == DataType.BYTE:
                         self._emit("MOV", "B,A")  # Save value in B
                         self._gen_expr(addr_arg)  # HL = offset
-                        self._emit("LXI", "D,??MEMORY")
-                        self._emit("DAD", "D")  # HL = ??MEMORY + offset
+                        self._emit("LXI", "D,__END__")
+                        self._emit("DAD", "D")  # HL = __END__ + offset
                         self._emit("MOV", "M,B")  # Store value at (HL)
                     else:
                         self._emit("PUSH", "H")  # Save value
                         self._gen_expr(addr_arg)  # HL = offset
-                        self._emit("LXI", "D,??MEMORY")
-                        self._emit("DAD", "D")  # HL = ??MEMORY + offset
+                        self._emit("LXI", "D,__END__")
+                        self._emit("DAD", "D")  # HL = __END__ + offset
                         self._emit("XCHG")  # DE = address
                         self._emit("POP", "H")  # HL = value
                         self._emit("MOV", "A,L")
@@ -5110,16 +5118,17 @@ class CodeGenerator:
             return DataType.ADDRESS
 
         if name == "MEMORY":
-            # MEMORY(addr) - direct memory access as byte array starting at ??MEMORY
-            # Generate ??MEMORY + offset into HL
+            # MEMORY(addr) - direct memory access as byte array starting at __END__
+            # Generate __END__ + offset into HL
+            self.needs_end_symbol = True
             if isinstance(args[0], NumberLiteral) and args[0].value == 0:
-                # MEMORY(0) - just use ??MEMORY directly
-                self._emit("LXI", "H,??MEMORY")
+                # MEMORY(0) - just use __END__ directly
+                self._emit("LXI", "H,__END__")
             else:
-                # MEMORY(n) - compute ??MEMORY + n
+                # MEMORY(n) - compute __END__ + n
                 self._gen_expr(args[0])  # HL = offset
-                self._emit("LXI", "D,??MEMORY")
-                self._emit("DAD", "D")  # HL = ??MEMORY + offset
+                self._emit("LXI", "D,__END__")
+                self._emit("DAD", "D")  # HL = __END__ + offset
             # Load byte from (HL)
             self._emit("MOV", "A,M")
             return DataType.BYTE
@@ -5260,7 +5269,8 @@ class CodeGenerator:
             # Check for built-in MEMORY - its address is the end of program data
             # In PL/M-80, .MEMORY gives the first free byte after all variables
             if name.upper() == "MEMORY":
-                self._emit("LXI", "H,??MEMORY")
+                self.needs_end_symbol = True
+                self._emit("LXI", "H,__END__")
                 return DataType.ADDRESS
 
             # Check for LITERALLY macro - expand recursively
