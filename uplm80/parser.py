@@ -4,12 +4,10 @@ PL/M-80 Parser.
 Recursive descent parser that converts tokens into an AST.
 """
 
-from typing import Callable
 from .tokens import Token, TokenType
 from .lexer import Lexer
 from .errors import ParserError, SourceLocation
 from .ast_nodes import (
-    ASTNode,
     SourceSpan,
     DataType,
     BinaryOp,
@@ -290,13 +288,6 @@ class Parser:
                     break
 
             return expr
-
-        # Built-in functions that look like keywords
-        builtins = {
-            TokenType.PLUS,
-            TokenType.MINUS,
-        }
-        # Handle these separately if needed
 
         raise self._error(f"Expected expression, got {self.current.type.name}")
 

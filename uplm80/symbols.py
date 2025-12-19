@@ -6,7 +6,6 @@ Tracks variables, procedures, labels, and their attributes across scopes.
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any
 from .ast_nodes import DataType, StructMember
 
 

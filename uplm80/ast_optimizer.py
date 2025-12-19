@@ -10,13 +10,10 @@ Performs high-level optimizations on the AST before code generation:
 - Algebraic simplifications
 """
 
-from dataclasses import dataclass, field
-from typing import Callable
 from copy import deepcopy
 
 from .ast_nodes import (
     ASTNode,
-    DataType,
     BinaryOp,
     UnaryOp,
     Expr,
@@ -37,8 +34,6 @@ from .ast_nodes import (
     ReturnStmt,
     GotoStmt,
     HaltStmt,
-    EnableStmt,
-    DisableStmt,
     NullStmt,
     LabeledStmt,
     IfStmt,
@@ -48,7 +43,6 @@ from .ast_nodes import (
     DoCaseBlock,
     Declaration,
     VarDecl,
-    LabelDecl,
     LiterallyDecl,
     ProcDecl,
     DeclareStmt,

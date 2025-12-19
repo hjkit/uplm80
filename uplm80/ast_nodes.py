@@ -5,7 +5,6 @@ These nodes represent the structure of a PL/M-80 program after parsing.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
 from enum import Enum, auto
 
 

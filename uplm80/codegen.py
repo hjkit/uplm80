@@ -5,10 +5,8 @@ Generates 8080 or Z80 assembly code from the optimized AST.
 Outputs MACRO-80 compatible .MAC files.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum, auto
-from typing import TextIO
-from io import StringIO
 
 from .ast_nodes import (
     DataType,
@@ -50,7 +48,7 @@ from .ast_nodes import (
     Module,
 )
 from .symbols import SymbolTable, Symbol, SymbolKind
-from .errors import CodeGenError, SourceLocation
+from .errors import CodeGenError
 from .runtime import get_runtime_library
 
 
@@ -1674,7 +1672,7 @@ class CodeGenerator:
         # Generate prologue code for register parameter (last param in A or HL)
         # For non-reentrant procedures, the last param is passed in register and needs to be stored
         if param_infos and not decl.is_reentrant:
-            last_param_name, last_asm_name, last_param_type, last_param_size = param_infos[-1]
+            _, last_asm_name, last_param_type, _ = param_infos[-1]
             if last_param_type == DataType.BYTE:
                 # Last param came in A - store it
                 self._emit("ld", f"({last_asm_name}),a")
@@ -4608,7 +4606,7 @@ class CodeGenerator:
 
     def _gen_member(self, expr: MemberExpr) -> DataType:
         """Generate code for structure member access - load value."""
-        offset, member_type = self._get_member_info(expr)
+        _, member_type = self._get_member_info(expr)
         self._gen_member_addr(expr)
 
         if member_type == DataType.ADDRESS:
