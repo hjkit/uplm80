@@ -954,7 +954,7 @@ class CodeGenerator:
         if self.needs_runtime:
             self._emit()
             self._emit(comment="Runtime library")
-            runtime = get_runtime_library(self.needs_runtime, target_z80=(self.target == Target.Z80))
+            runtime = get_runtime_library(self.needs_runtime)
             for line in runtime.split("\n"):
                 stripped = line.strip()
                 if stripped:
@@ -1137,7 +1137,7 @@ class CodeGenerator:
         if self.needs_runtime:
             self._emit()
             self._emit(comment="Runtime library")
-            runtime = get_runtime_library(self.needs_runtime, target_z80=(self.target == Target.Z80))
+            runtime = get_runtime_library(self.needs_runtime)
             for line in runtime.split("\n"):
                 stripped = line.strip()
                 if stripped:
