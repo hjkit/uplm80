@@ -122,6 +122,8 @@ declare error$flag byte;
 /* Input byte limit for ARC decompression (0FFFFH = no limit) */
 declare input$limit address;
 
+/* MEMORY is a predeclared array in PL/M-80 representing free memory after program */
+
 /*========================================================
  * Console Output
  *========================================================*/
@@ -1846,34 +1848,32 @@ main: procedure;
     /* Initialize pointers */
     fcb$ptr = 005ch;
     dma$ptr = 0080h;
-    /* FCBs placed after all other buffers to avoid collision with ??AUTO.
-     * The ??AUTO area (156 bytes) is placed after the code, typically around
-     * 0x2440-0x24DC. Placing FCBs at high addresses avoids any overlap.
-     */
-    ifcb$ptr = 9900h;  /* After work buffer at 0x8900 */
-    ofcb$ptr = 9924h;
 
-    /* Allocate buffers in high memory */
-    /* Program is ~9K, ends around 0x2400. Buffers start at 0x2500.
-     * Memory layout (from 0x2500):
-     *   INBUF:     4096 bytes (2500H - 34FFH)
-     *   OUTBUF:    4096 bytes (3500H - 44FFH)
-     *   HUFF_TREE: 1024 bytes (4500H - 48FFH)
-     *   LZW_PREFIX:8192 bytes (4900H - 68FFH)
-     *   LZW_SUFFIX:4096 bytes (6900H - 78FFH)
-     *   RING:      4096 bytes (7900H - 88FFH)
-     *   WORK:      4096 bytes (8900H - 98FFH)
-     * Total: ~29K, ends at ~0x9900, well below TPA top (~0xC000)
+    /* Allocate buffers after program using .memory as base
+     * Memory layout (offsets from base):
+     *   IFCB:      36 bytes   (base + 0)
+     *   OFCB:      36 bytes   (base + 36)
+     *   INBUF:     4096 bytes (base + 72)
+     *   OUTBUF:    4096 bytes (base + 4168)
+     *   HUFF_TREE: 1024 bytes (base + 8264)
+     *   LZW_PREFIX:8192 bytes (base + 9288)
+     *   LZW_SUFFIX:4096 bytes (base + 17480)
+     *   RING:      4096 bytes (base + 21576)
+     *   WORK:      4096 bytes (base + 25672)
+     * Total: ~30K from base
      */
-    inbuf$ptr = 2500h;
+    /* Use predeclared MEMORY array - points to free memory after program */
+    ifcb$ptr = .memory;
+    ofcb$ptr = ifcb$ptr + 36;
+    inbuf$ptr = ofcb$ptr + 36;
     inbuf$size = 4096;
-    outbuf$ptr = 3500h;
+    outbuf$ptr = inbuf$ptr + 4096;
     outbuf$size = 4096;
-    huff$tree$ptr = 4500h;
-    lzw$prefix$ptr = 4900h;
-    lzw$suffix$ptr = 6900h;
-    ring$ptr = 7900h;
-    work$ptr = 8900h;
+    huff$tree$ptr = outbuf$ptr + 4096;
+    lzw$prefix$ptr = huff$tree$ptr + 1024;
+    lzw$suffix$ptr = lzw$prefix$ptr + 8192;
+    ring$ptr = lzw$suffix$ptr + 4096;
+    work$ptr = ring$ptr + 4096;
 
     /* Print banner */
     call crlf;

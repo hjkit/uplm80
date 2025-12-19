@@ -66,16 +66,30 @@ counter = counter + 1;  /* Works correctly */
 
 ## Heap Allocation
 
-Use the predeclared `MEMORY` array to get the address of free memory after the program:
+The linker provides `__END__` at the end of all code/data. Since PL/M can't directly reference symbols with underscores, create a bridge in assembly:
 
-```plm
-/* .memory points to free memory after program code/data */
-buffer$ptr = .memory;
+```asm
+; heap.asm
+    .Z80
+    PUBLIC  HEAPBASE
+    EXTRN   __END__
+
+HEAPBASE:
+    DW  __END__
+
+    END
 ```
 
-The compiler places the `??MEMORY` label at the end of all code and data segments.
+Then in PL/M:
 
-**Future:** When the linker provides an `__END__` symbol, that would be the preferred way to allocate heap memory in multi-module programs.
+```plm
+declare heap$base address external;
+
+/* In initialization: */
+buffer$ptr = heap$base;
+```
+
+Link with: `ul80 -o program.com program.rel heap.rel`
 
 ## Recommended File Order
 

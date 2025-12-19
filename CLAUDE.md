@@ -1,6 +1,6 @@
 # PL/M-80 Compiler (uplm80)
 
-A PL/M-80 compiler targeting 8080/Z80 assembly.
+A PL/M-80 compiler targeting Z80 assembly.
 
 ## Tools
 
@@ -46,21 +46,15 @@ cpmemu program.com arg1 arg2      # Run with arguments
    Options:
    - `-m cpm` - CP/M mode (default): For new PL/M programs, maximum stack under BDOS
    - `-m bare` - Bare metal mode: Original Digital Research compatible (jump to start-3)
-   - `-t z80` or `-t 8080` - Target processor (default: z80)
    - `-O 0|1|2|3` - Optimization level (default: 2)
    - `-D SYMBOL` - Define conditional compilation symbol (can be repeated)
 
-2. (Optional) Run post-assembly optimizer:
-   ```bash
-   python -m uplm80.postopt output.mac -o output_opt.mac
-   ```
-
-3. Assemble to relocatable object:
+2. Assemble to relocatable object:
    ```bash
    um80 output.mac
    ```
 
-4. Link with runtime library:
+3. Link with runtime library:
    ```bash
    ul80 -o output.com output.rel runtime.rel
    ```
@@ -69,13 +63,11 @@ cpmemu program.com arg1 arg2      # Run with arguments
 
 The compiler generates code that uses these runtime routines (must be provided in a runtime.rel):
 
-- `??MOVE` - Block memory move
-- `??SHL` - 16-bit shift left
-- `??SHR` - 16-bit shift right (logical)
-- `??SHRS` - 16-bit shift right (arithmetic)
-- `??DIV` - 16-bit unsigned division
-- `??MUL` - 16-bit unsigned multiplication
-- `??MOD` - 16-bit unsigned modulo
+- `??move` - Block memory move
+- `??div16` - 16-bit unsigned division
+- `??mul16` - 16-bit unsigned multiplication
+- `??mod16` - 16-bit unsigned modulo
+- `??subde` - 16-bit subtraction (HL = HL - DE)
 
 ## Runtime Modes
 
@@ -85,18 +77,18 @@ For new PL/M programs. Provides maximum stack space by using the area under BDOS
 
 **Entry Point Code:**
 ```asm
-ORG 100H              ; CP/M TPA start
-LD HL,(6)             ; Get BDOS address from location 6
-LD SP,HL              ; Set stack to top of TPA (maximum stack)
-CALL MAIN             ; Call main procedure
-JP 0                  ; Return to CP/M (warm boot)
+org 100h              ; CP/M TPA start
+ld hl,(6)             ; Get BDOS address from location 6
+ld sp,hl              ; Set stack to top of TPA (maximum stack)
+call main             ; Call main procedure
+jp 0                  ; Return to CP/M (warm boot)
 ```
 
 **Features:**
 - Maximum available stack (all memory between program end and BDOS)
 - Clean return to CP/M on program exit
-- Requires CP/M stubs: `MON1`, `MON2`, `MON3`, `BOOT`
-- Requires memory locations: `BDISK`, `MAXB`, `FCB`, `BUFF`, `IOBYTE`
+- Requires CP/M stubs: `mon1`, `mon2`, `mon3`, `boot`
+- Requires memory locations: `bdisk`, `maxb`, `fcb`, `buff`, `iobyte`
 
 ### Bare Metal Mode (`-m bare`)
 
@@ -104,13 +96,13 @@ For original Digital Research PL/M-80 compatibility. Programs begin with a jump 
 
 **Entry Point Code:**
 ```asm
-ORG 100H              ; Or custom origin
-JP ??START            ; Jump to initialization at start-3
-DS 64                 ; 64-byte stack buffer
-??STACK:              ; Label at top of stack (SP set here)
-??START:
-LXI SP,??STACK        ; Set stack to local stack buffer
-CALL MAIN             ; Call main procedure
+org 100h              ; Or custom origin
+jp ??start            ; Jump to initialization at start-3
+ds 64                 ; 64-byte stack buffer
+??stack:              ; Label at top of stack (SP set here)
+??start:
+ld sp,??stack         ; Set stack to local stack buffer
+call main             ; Call main procedure
 ; (falls through - program controls exit behavior)
 ```
 
@@ -142,25 +134,23 @@ Command line: `python -m uplm80.compiler input.plm -D MPM -D CPM3`
 ## CP/M Stubs
 
 For CP/M programs (`-m cpm`), provide stubs for:
-- `MON1` - BDOS call (void return)
-- `MON2` - BDOS call (byte return)
-- `MON3` - BDOS call (address return)
-- `BOOT` - Warm boot
-- Memory locations: BDISK, MAXB, FCB, BUFF, IOBYTE
+- `mon1` - BDOS call (void return)
+- `mon2` - BDOS call (byte return)
+- `mon3` - BDOS call (address return)
+- `boot` - Warm boot
+- Memory locations: bdisk, maxb, fcb, buff, iobyte
 
 ## Optimizations
 
-### Compiler Optimizations (codegen.py, peephole.py)
-- **SHL(DOUBLE(x),8) OR y pattern**: Combines two bytes into 16-bit address efficiently using `LD H,A; LD L,A` instead of 14+ instruction 16-bit OR
-- **Peephole optimizer**: Register tracking, redundant load elimination, strength reduction
-- **Z80-specific**: DJNZ for loops, relative jumps, block instructions
+### Compiler Optimizations (codegen.py)
+- **SHL(DOUBLE(x),8) OR y pattern**: Combines two bytes into 16-bit address efficiently using `ld h,a; ld l,a` instead of 14+ instruction 16-bit OR
+- **Z80-specific**: Uses Z80 instructions like `sbc hl,de`, `srl`, indexed addressing with IX
 
-### Post-Assembly Optimizer (postopt.py)
-Multi-pass optimizer that works on generated assembly:
-- **Tail merging**: Finds procedures with identical tail sequences and merges them using the DB 21H (LD HL,nn) skip trick to fall through to shared code
-- **Skip trick**: Adjacent procedures ending with JP can skip 2-byte instructions using DB 21H
-
-Example: If 4 procedures end with `LD DE,0; JP 5`, three are rewritten to fall through to the fourth, saving ~15 bytes.
+### Peephole Optimizer (upeepz80)
+External peephole optimizer library that works on Z80 assembly:
+- Register tracking, redundant load elimination, strength reduction
+- DJNZ for loops, relative jumps (jr), block instructions
+- Tail merging and other cross-procedure optimizations
 
 ## Reference Binaries
 
@@ -168,4 +158,4 @@ To compare against original Digital Research binaries, disassemble with ud80:
 
 ```bash
 ~/z80/RomWBW/Source/Images/d_cpm22/u0$ ud80 ED.COM -o ~/real_ed.mac
-
+```
