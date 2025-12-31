@@ -759,6 +759,22 @@ class CodeGenerator:
         self.needs_runtime.add("subde")
         self._emit("call", "??subde")
 
+    def _emit_add_hl_const(self, n: int) -> None:
+        """Emit HL = HL + constant, optimized for small values.
+
+        For n=1-3, uses repeated INC HL (1 byte, 6 cycles each).
+        For larger values, uses LD DE,n; ADD HL,DE (4 bytes, 21 cycles).
+        """
+        if n == 0:
+            return  # No operation needed
+        elif n <= 3:
+            # Use INC HL for small values (saves 3, 2, or 1 bytes)
+            for _ in range(n):
+                self._emit("inc", "hl")
+        else:
+            self._emit("ld", f"de,{self._format_number(n)}")
+            self._emit("add", "hl,de")
+
     def _new_label(self, prefix: str = "L") -> str:
         """Generate a new unique label."""
         self.label_counter += 1
@@ -2426,6 +2442,20 @@ class CodeGenerator:
                 self._emit_jump_on_false(op, false_label)
                 return True
         else:
+            # Optimize ADDRESS comparison with 0: use ld a,l / or h instead of subtraction
+            if op in (BinaryOp.EQ, BinaryOp.NE) and isinstance(condition.right, NumberLiteral) and condition.right.value == 0:
+                self._gen_expr(condition.left)  # Result in HL
+                if left_type == DataType.BYTE:
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
+                self._emit("ld", "a,l")
+                self._emit("or", "h")  # Z flag set if HL == 0
+                if op == BinaryOp.EQ:
+                    self._emit("jp", f"nz,{false_label}")  # If HL != 0, condition is false
+                else:  # NE
+                    self._emit("jp", f"z,{false_label}")  # If HL == 0, condition is false
+                return True
+
             # 16-bit comparison - optimize evaluation order when possible
             # Only optimize if left is simple AND right is complex
             # (if right is simple, loading it to DE directly is more efficient)
@@ -2593,6 +2623,20 @@ class CodeGenerator:
                 self._emit_jump_on_true(op, true_label)
                 return True
         else:
+            # Optimize ADDRESS comparison with 0: use ld a,l / or h instead of subtraction
+            if op in (BinaryOp.EQ, BinaryOp.NE) and isinstance(condition.right, NumberLiteral) and condition.right.value == 0:
+                self._gen_expr(condition.left)  # Result in HL
+                if left_type == DataType.BYTE:
+                    self._emit("ld", "l,a")
+                    self._emit("ld", "h,0")
+                self._emit("ld", "a,l")
+                self._emit("or", "h")  # Z flag set if HL == 0
+                if op == BinaryOp.EQ:
+                    self._emit("jp", f"z,{true_label}")  # If HL == 0, condition is true
+                else:  # NE
+                    self._emit("jp", f"nz,{true_label}")  # If HL != 0, condition is true
+                return True
+
             # 16-bit comparison
             self._gen_expr(condition.left)
             if left_type == DataType.BYTE:
@@ -4224,6 +4268,39 @@ class CodeGenerator:
                 self._emit_sub16()
                 return DataType.ADDRESS
 
+        # Optimize MUL by constant power of 2: use shifts instead of runtime call
+        if op == BinaryOp.MUL:
+            const_val = None
+            other_expr = None
+            if isinstance(expr.right, NumberLiteral):
+                const_val = expr.right.value
+                other_expr = expr.left
+            elif isinstance(expr.left, NumberLiteral):
+                const_val = expr.left.value
+                other_expr = expr.right
+
+            if const_val is not None and const_val > 0:
+                # Check if power of 2: x & (x-1) == 0 for powers of 2
+                if (const_val & (const_val - 1)) == 0:
+                    # Count shifts needed (log2)
+                    shift_count = 0
+                    temp = const_val
+                    while temp > 1:
+                        temp >>= 1
+                        shift_count += 1
+
+                    # Generate the non-constant operand
+                    other_type = self._gen_expr(other_expr)
+                    if other_type == DataType.BYTE:
+                        self._emit("ld", "l,a")
+                        self._emit("ld", "h,0")
+
+                    # Apply shifts
+                    for _ in range(shift_count):
+                        self._emit("add", "hl,hl")  # HL *= 2
+
+                    return DataType.ADDRESS
+
         # Fall through to 16-bit operations
         # Optimize evaluation order to avoid PUSH/POP when possible:
         # If left is simple (doesn't touch DE), evaluate right first, save to DE, then left
@@ -4283,6 +4360,8 @@ class CodeGenerator:
             self._emit_sub16()
 
         elif op == BinaryOp.MUL:
+            # Power of 2 cases handled above with early return
+            # This handles non-power-of-2 multiplies
             self.needs_runtime.add("mul16")
             self._emit("call", "??mul16")
 
@@ -4756,17 +4835,7 @@ class CodeGenerator:
         # Optimize for constant index (only reached for BASED or computed base)
         if isinstance(expr.index, NumberLiteral):
             offset = expr.index.value * elem_size
-            if offset == 0:
-                # Index 0 - base address is already correct
-                pass
-            elif offset <= 255:
-                # Small offset - can use ld de,offset; add hl,DE
-                self._emit("ld", f"de,{offset}")
-                self._emit("add", "hl,de")
-            else:
-                # Large offset
-                self._emit("ld", f"de,{offset}")
-                self._emit("add", "hl,de")
+            self._emit_add_hl_const(offset)
         else:
             # Variable index with complex base or ADDRESS index
             idx_type = self._get_expr_type(expr.index)
@@ -4792,8 +4861,13 @@ class CodeGenerator:
 
                 if elem_size > 1:
                     # Multiply index by element size
-                    if elem_size == 2:
-                        self._emit("add", "hl,hl")  # HL *= 2
+                    # Check if elem_size is a power of 2: x & (x-1) == 0
+                    if (elem_size & (elem_size - 1)) == 0:
+                        # Power of 2: use repeated add hl,hl
+                        temp = elem_size
+                        while temp > 1:
+                            self._emit("add", "hl,hl")  # HL *= 2
+                            temp >>= 1
                     else:
                         # General case: HL = HL * elem_size using multiply routine
                         self._emit("ld", f"de,{elem_size}")
@@ -4908,9 +4982,7 @@ class CodeGenerator:
         offset, _ = self._get_member_info(expr)
 
         # Add offset to base address (in HL)
-        if offset > 0:
-            self._emit("ld", f"de,{offset}")
-            self._emit("add", "hl,de")
+        self._emit_add_hl_const(offset)
 
     def _gen_call_expr(self, expr: CallExpr) -> DataType:
         """Generate code for function call expression or array subscript.
@@ -4962,9 +5034,7 @@ class CodeGenerator:
             # Add the subscript offset
             if isinstance(idx_expr, NumberLiteral):
                 offset = idx_expr.value * elem_size
-                if offset > 0:
-                    self._emit("ld", f"de,{offset}")
-                    self._emit("add", "hl,de")
+                self._emit_add_hl_const(offset)
             else:
                 # Variable index
                 self._emit("push", "hl")  # Save member addr
@@ -5305,30 +5375,46 @@ class CodeGenerator:
                 elif shift_count <= 3:
                     # Small shifts: inline the loop
                     for _ in range(shift_count):
-                        self._emit("or", "a")  # Clear carry
+                        if self.target == Target.Z80:
+                            # Z80: use SRL/RR - 2 instructions per shift
+                            self._emit("srl", "h")  # H >>= 1, bit 0 -> carry
+                            self._emit("rr", "l")   # L = (carry << 7) | (L >> 1)
+                        else:
+                            # 8080: need to go through accumulator - 7 instructions per shift
+                            self._emit("or", "a")  # Clear carry
+                            self._emit("ld", "a,h")
+                            self._emit("rra")
+                            self._emit("ld", "h,a")
+                            self._emit("ld", "a,l")
+                            self._emit("rra")
+                            self._emit("ld", "l,a")
+                else:
+                    # For 4-6 shifts, use a counted loop
+                    if self.target == Target.Z80:
+                        # Z80: use DJNZ for tight loop
+                        self._emit("ld", f"b,{shift_count}")
+                        shift_loop = self._new_label("SHR")
+                        self._emit_label(shift_loop)
+                        self._emit("srl", "h")  # H >>= 1, bit 0 -> carry
+                        self._emit("rr", "l")   # L = (carry << 7) | (L >> 1)
+                        self._emit("djnz", shift_loop)
+                    else:
+                        # 8080: use C counter and JP m
+                        self._emit("ld", f"c,{shift_count}")
+                        shift_loop = self._new_label("SHR")
+                        end_label = self._new_label("SHRE")
+                        self._emit_label(shift_loop)
+                        self._emit("dec", "c")
+                        self._emit("jp", f"m,{end_label}")
+                        self._emit("or", "a")
                         self._emit("ld", "a,h")
                         self._emit("rra")
                         self._emit("ld", "h,a")
                         self._emit("ld", "a,l")
                         self._emit("rra")
                         self._emit("ld", "l,a")
-                else:
-                    # For 4-6 shifts, use a counted loop
-                    self._emit("ld", f"c,{shift_count}")
-                    shift_loop = self._new_label("SHR")
-                    end_label = self._new_label("SHRE")
-                    self._emit_label(shift_loop)
-                    self._emit("dec", "c")
-                    self._emit("jp", f"m,{end_label}")
-                    self._emit("or", "a")
-                    self._emit("ld", "a,h")
-                    self._emit("rra")
-                    self._emit("ld", "h,a")
-                    self._emit("ld", "a,l")
-                    self._emit("rra")
-                    self._emit("ld", "l,a")
-                    self._emit("jp", shift_loop)
-                    self._emit_label(end_label)
+                        self._emit("jp", shift_loop)
+                        self._emit_label(end_label)
                 return DataType.ADDRESS
 
             # Variable shift - use loop
@@ -5339,25 +5425,44 @@ class CodeGenerator:
                 self._emit("ld", "h,0")
             self._emit("push", "hl")
             count_type = self._gen_expr(args[1])
-            if count_type == DataType.BYTE:
-                self._emit("ld", "c,a")  # Count in C (from A for byte)
+            if self.target == Target.Z80:
+                # Z80: use B register with DJNZ, check for zero first
+                if count_type == DataType.BYTE:
+                    self._emit("ld", "b,a")
+                else:
+                    self._emit("ld", "b,l")
+                self._emit("pop", "hl")
+                end_label = self._new_label("SHRE")
+                self._emit("inc", "b")  # Pre-increment so DJNZ works with count=0
+                self._emit("dec", "b")  # Test for zero
+                self._emit("jp", f"z,{end_label}")
+                shift_loop = self._new_label("SHR")
+                self._emit_label(shift_loop)
+                self._emit("srl", "h")
+                self._emit("rr", "l")
+                self._emit("djnz", shift_loop)
+                self._emit_label(end_label)
             else:
-                self._emit("ld", "c,l")  # Count in C (from L for address)
-            self._emit("pop", "hl")
-            shift_loop = self._new_label("SHR")
-            end_label = self._new_label("SHRE")
-            self._emit_label(shift_loop)
-            self._emit("dec", "c")
-            self._emit("jp", f"m,{end_label}")
-            self._emit("or", "a")  # Clear carry
-            self._emit("ld", "a,h")
-            self._emit("rra")
-            self._emit("ld", "h,a")
-            self._emit("ld", "a,l")
-            self._emit("rra")
-            self._emit("ld", "l,a")
-            self._emit("jp", shift_loop)
-            self._emit_label(end_label)
+                # 8080: use C counter
+                if count_type == DataType.BYTE:
+                    self._emit("ld", "c,a")  # Count in C (from A for byte)
+                else:
+                    self._emit("ld", "c,l")  # Count in C (from L for address)
+                self._emit("pop", "hl")
+                shift_loop = self._new_label("SHR")
+                end_label = self._new_label("SHRE")
+                self._emit_label(shift_loop)
+                self._emit("dec", "c")
+                self._emit("jp", f"m,{end_label}")
+                self._emit("or", "a")  # Clear carry
+                self._emit("ld", "a,h")
+                self._emit("rra")
+                self._emit("ld", "h,a")
+                self._emit("ld", "a,l")
+                self._emit("rra")
+                self._emit("ld", "l,a")
+                self._emit("jp", shift_loop)
+                self._emit_label(end_label)
             return DataType.ADDRESS
 
         if name == "ROL":
@@ -5719,9 +5824,7 @@ class CodeGenerator:
                 # Add the subscript offset
                 if isinstance(idx_expr, NumberLiteral):
                     offset = idx_expr.value * elem_size
-                    if offset > 0:
-                        self._emit("ld", f"de,{offset}")
-                        self._emit("add", "hl,de")
+                    self._emit_add_hl_const(offset)
                 else:
                     # Variable index
                     self._emit("push", "hl")  # Save member addr
