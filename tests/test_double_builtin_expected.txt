@@ -1,21 +1,21 @@
 DOUBLE() Tests
 ==============
 
-dbl_0 0
-dbl_1 256
-dbl_2 512
-dbl_10 2560
-dbl_255 65280
-dbl_100 25600
-dblv_1 256
-dblv_5 1280
-dblv_128 32768
-dblv_0 0
-dble_1 261
-dble_2 612
-dble_3 512
-comb_1 256
-comb_2 65535
-comb_3 4128
+dbl_0  0
+dbl_1  256
+dbl_2  512
+dbl_10  2560
+dbl_255  65280
+dbl_100  25600
+dblv_1  256
+dblv_5  1280
+dblv_128  32768
+dblv_0  0
+dble_1  261
+dble_2  612
+dble_3  512
+comb_1  256
+comb_2  65535
+comb_3  4128
 
 Done.

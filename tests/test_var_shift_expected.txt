@@ -1,27 +1,27 @@
 Variable Shift Tests
 ====================
 
-shl_b1 16
-shl_b2 40
-shl_b3 65280
-shl_a1 32
-shl_c1 32
-shl_e1 32
-shr_b1 16
-shr_b2 15
-shr_b3 255
-shr_b4 16
-rol_b1 16
-rol_b2 1
-rol_b3 170
-ror_b1 1
-ror_b2 128
-ror_b3 85
-mix_1 64
-mix_2 26
-mix_3 16
-mix_4 16
-proc_c 16
-proc_c2 16
+shl_b1  16
+shl_b2  40
+shl_b3  65280
+shl_a1  32
+shl_c1  32
+shl_e1  32
+shr_b1  16
+shr_b2  15
+shr_b3  255
+shr_b4  16
+rol_b1  16
+rol_b2  1
+rol_b3  170
+ror_b1  1
+ror_b2  128
+ror_b3  85
+mix_1  64
+mix_2  26
+mix_3  16
+mix_4  16
+proc_c  16
+proc_c2  16
 
 Done.

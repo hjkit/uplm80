@@ -1,26 +1,26 @@
 LITERALLY Tests
 ===============
 
-sm_0 1
-sm_3 4
-md_0 0
-md_7 14
-lg_0 0
-lg_15 15
-fcb_drv 0
-fcb_ext 5
-fcb_rc 10
-fcb_nm0 65
-fcb_nm8 73
-fcb_ex0 67
-fcb_al0 100
-fcb_al7 107
-lit_10 10
-lit_100 100
-lit_sum 110
-lit_mul 100
-lit_dbl 20
-loop_b 55
-loop_s 10
+sm_0  1
+sm_3  4
+md_0  0
+md_7  14
+lg_0  0
+lg_15  15
+fcb_drv  0
+fcb_ext  5
+fcb_rc  10
+fcb_nm0  65
+fcb_nm8  73
+fcb_ex0  67
+fcb_al0  100
+fcb_al7  107
+lit_10  10
+lit_100  100
+lit_sum  110
+lit_mul  100
+lit_dbl  20
+loop_b  55
+loop_s  10
 
 Done.

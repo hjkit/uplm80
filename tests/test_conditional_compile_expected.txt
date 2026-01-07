@@ -1,11 +1,11 @@
 Conditional Compile
 ===================
 
-cmd_sym 100
-loc_sym 200
-undef_s 50
-reset_s 75
-cond_p 42
-nested 111
+cmd_sym  100
+loc_sym  200
+undef_s  50
+reset_s  75
+cond_p  42
+nested  111
 
 Done.

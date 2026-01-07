@@ -1,21 +1,21 @@
 Reentrant Tests
 ===============
 
-add_re 30
-add_re2 155
-addr_re 3345
-comp_re 265
-fact5 120
-fact5_c 5
-fact6 720
-fact6_c 6
-fact1 1
-fact1_c 1
-fib0 0
-fib1 1
-fib6 8
-fib10 55
-nest1 25
-nest2 694
+add_re  30
+add_re2  155
+addr_re  3345
+comp_re  265
+fact5  120
+fact5_c  5
+fact6  720
+fact6_c  6
+fact1  1
+fact1_c  1
+fib0  0
+fib1  1
+fib6  8
+fib10  55
+nest1  25
+nest2  694
 
 Done.

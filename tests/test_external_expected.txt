@@ -1,17 +1,17 @@
 External Proc Tests
 ===================
 
-ext_1
-ext_ok 1
-gv1 42
-gv2 1234
-loc 100
+ext_1 
+ext_ok  1
+gv1  42
+gv2  1234
+loc  100
 X
-chr_ok 1
-arr_0 0
-arr_5 15
-arr_9 27
-sum 300
-prod 300
+chr_ok  1
+arr_0  0
+arr_5  15
+arr_9  27
+sum  300
+prod  300
 
 Done.
