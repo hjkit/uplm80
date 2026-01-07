@@ -3531,6 +3531,9 @@ class CodeGenerator:
         """
         Check if evaluating this expression preserves the DE register.
         Used to optimize binary expression evaluation order.
+
+        TODO: This ad-hoc approach should be replaced with automatic register
+        tracking. See docs/REGISTER_TRACKING_DESIGN.md for the proposed refactor.
         """
         if isinstance(expr, NumberLiteral):
             return True  # ld hl,n doesn't touch DE
