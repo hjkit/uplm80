@@ -5,8 +5,10 @@ Generates 8080 or Z80 assembly code from the optimized AST.
 Outputs MACRO-80 compatible .MAC files.
 """
 
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Callable, Iterator
 
 from .ast_nodes import (
     DataType,
@@ -63,6 +65,206 @@ class Mode(Enum):
 
     CPM = auto()   # CP/M program (ORG 100H, stack from BDOS, return to OS)
     BARE = auto()  # Bare metal program (original Intel PL/M style)
+
+
+class RegState(Enum):
+    """State of a register in the allocator."""
+
+    FREE = auto()      # Available for use
+    BUSY = auto()      # Contains live value, in use
+    SPILLED = auto()   # Value saved to stack, register reused
+
+
+class RegClass(Enum):
+    """Register classes for allocation requests."""
+
+    BYTE = auto()      # Need A register
+    ADDR = auto()      # Need HL (primary 16-bit)
+    ADDR_ALT = auto()  # Need DE or BC (secondary 16-bit)
+    INDEX = auto()     # Need IX or IY
+
+
+@dataclass
+class RegDescriptor:
+    """Descriptor tracking state of a single register."""
+
+    state: RegState = RegState.FREE
+    owner: str = ""           # Debug: what claimed this register
+    spill_depth: int = 0      # Stack depth when spilled (for nested spills)
+    contents: str = ""        # Debug: description of contents
+
+
+@dataclass
+class RegisterAllocator:
+    """
+    Tracks register state and manages allocation.
+
+    This implements demand-driven register allocation with automatic spilling.
+    When code needs a register that's busy, it's automatically saved to the
+    stack and restored when released.
+
+    Usage:
+        # Claim a register (spills if busy)
+        self.regs.need_reg('de', 'binary_left', self._emit)
+
+        # Release when done (restores if spilled)
+        self.regs.release_reg('de', self._emit)
+
+        # Or use context manager for scoped usage
+        with self.regs.with_reg('de', 'binary_left', self._emit):
+            # DE is claimed here
+            ...
+        # DE automatically released
+    """
+
+    # Register descriptors
+    a: RegDescriptor = field(default_factory=RegDescriptor)
+    hl: RegDescriptor = field(default_factory=RegDescriptor)
+    de: RegDescriptor = field(default_factory=RegDescriptor)
+    bc: RegDescriptor = field(default_factory=RegDescriptor)
+    ix: RegDescriptor = field(default_factory=RegDescriptor)
+
+    # Stack tracking for spilled registers
+    spill_stack: list[str] = field(default_factory=list)
+
+    # Statistics for debugging/optimization
+    stats: dict[str, int] = field(default_factory=dict)
+
+    def get_reg(self, name: str) -> RegDescriptor:
+        """Get descriptor by register name."""
+        return getattr(self, name.lower())
+
+    def is_busy(self, reg: str) -> bool:
+        """Check if a register is currently busy."""
+        return self.get_reg(reg).state == RegState.BUSY
+
+    def is_free(self, reg: str) -> bool:
+        """Check if a register is currently free."""
+        return self.get_reg(reg).state == RegState.FREE
+
+    def need_reg(self, reg_or_class: str | RegClass, owner: str,
+                 emit_fn: Callable[[str, str], None]) -> str:
+        """
+        Request a register. Returns the register name.
+        If busy, automatically spills it first.
+
+        Args:
+            reg_or_class: Specific register name ('hl', 'de') or RegClass
+            owner: Debug string identifying the requester
+            emit_fn: Callback to emit assembly (emit_fn('push', 'hl'))
+
+        Returns:
+            The allocated register name
+        """
+        # Resolve class to specific register
+        if isinstance(reg_or_class, RegClass):
+            reg = self._pick_reg_from_class(reg_or_class)
+        else:
+            reg = reg_or_class.lower()
+
+        desc = self.get_reg(reg)
+
+        if desc.state == RegState.BUSY:
+            # Must spill - save current contents to stack
+            self._spill_reg(reg, emit_fn)
+
+        # Mark as busy with new owner
+        desc.state = RegState.BUSY
+        desc.owner = owner
+        self.stats['claims'] = self.stats.get('claims', 0) + 1
+        return reg
+
+    def _spill_reg(self, reg: str, emit_fn: Callable[[str, str], None]) -> None:
+        """Spill a register to the stack."""
+        desc = self.get_reg(reg)
+        # For 'a', we need to push af
+        push_reg = 'af' if reg == 'a' else reg
+        emit_fn("push", push_reg)
+        self.spill_stack.append(reg)
+        desc.spill_depth = len(self.spill_stack)
+        desc.state = RegState.SPILLED
+        self.stats['spills'] = self.stats.get('spills', 0) + 1
+
+    def release_reg(self, reg: str, emit_fn: Callable[[str, str], None]) -> None:
+        """
+        Release a register. If it was spilled, restore it.
+
+        Args:
+            reg: Register name to release
+            emit_fn: Callback to emit assembly
+        """
+        reg = reg.lower()
+        desc = self.get_reg(reg)
+
+        # Check if we need to restore from spill
+        if self.spill_stack and self.spill_stack[-1] == reg:
+            # This register was spilled and is top of stack - restore it
+            pop_reg = 'af' if reg == 'a' else reg
+            emit_fn("pop", pop_reg)
+            self.spill_stack.pop()
+            self.stats['restores'] = self.stats.get('restores', 0) + 1
+
+        desc.state = RegState.FREE
+        desc.owner = ""
+        desc.spill_depth = 0
+
+    @contextmanager
+    def with_reg(self, reg: str, owner: str,
+                 emit_fn: Callable[[str, str], None]) -> Iterator[str]:
+        """Context manager for scoped register use."""
+        self.need_reg(reg, owner, emit_fn)
+        try:
+            yield reg
+        finally:
+            self.release_reg(reg, emit_fn)
+
+    def _pick_reg_from_class(self, cls: RegClass) -> str:
+        """Pick best register from class, preferring free ones."""
+        candidates = {
+            RegClass.BYTE: ['a'],
+            RegClass.ADDR: ['hl'],
+            RegClass.ADDR_ALT: ['de', 'bc'],
+            RegClass.INDEX: ['ix'],
+        }
+
+        for reg in candidates[cls]:
+            if self.get_reg(reg).state == RegState.FREE:
+                return reg
+
+        # All busy - return first (will be spilled)
+        return candidates[cls][0]
+
+    def mark_busy(self, reg: str, owner: str = "") -> None:
+        """Mark a register as busy without spilling (for tracking existing code)."""
+        desc = self.get_reg(reg.lower())
+        desc.state = RegState.BUSY
+        desc.owner = owner
+
+    def mark_free(self, reg: str) -> None:
+        """Mark a register as free (for tracking existing code)."""
+        desc = self.get_reg(reg.lower())
+        desc.state = RegState.FREE
+        desc.owner = ""
+        desc.spill_depth = 0
+
+    def reset(self) -> None:
+        """Reset all registers to free state."""
+        for reg in ['a', 'hl', 'de', 'bc', 'ix']:
+            desc = self.get_reg(reg)
+            desc.state = RegState.FREE
+            desc.owner = ""
+            desc.spill_depth = 0
+        self.spill_stack.clear()
+
+    def get_status(self) -> str:
+        """Get human-readable status of all registers (for debugging)."""
+        parts = []
+        for reg in ['a', 'hl', 'de', 'bc', 'ix']:
+            desc = self.get_reg(reg)
+            state = desc.state.name[0]  # F, B, or S
+            owner = f":{desc.owner}" if desc.owner else ""
+            parts.append(f"{reg.upper()}={state}{owner}")
+        return " ".join(parts)
 
 
 @dataclass
@@ -141,6 +343,8 @@ class CodeGenerator:
         self.current_if_stmt: IfStmt | None = None
         # Flag: A register contains L (low byte of HL) - for avoiding redundant ld a,L
         self.a_has_l: bool = False
+        # Register allocator for automatic spill/restore
+        self.regs = RegisterAllocator()
 
     def _parse_plm_number(self, s: str) -> int:
         """Parse a PL/M-style numeric literal (handles $ separators and B/H/O/Q/D suffixes)."""
