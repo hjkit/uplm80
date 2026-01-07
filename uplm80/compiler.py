@@ -123,6 +123,10 @@ class Compiler:
             codegen = CodeGenerator(self.target, self.mode)
             asm_code = codegen.generate(ast)
 
+            # Print any warnings from code generation
+            for warning in codegen.warnings:
+                print(warning, file=sys.stderr)
+
             if self.debug:
                 print(f"[DEBUG] Generated {len(asm_code.splitlines())} lines of assembly", file=sys.stderr)
 
@@ -244,6 +248,10 @@ class Compiler:
 
             codegen = CodeGenerator(self.target, self.mode)
             asm_code = codegen.generate_multi(modules)
+
+            # Print any warnings from code generation
+            for warning in codegen.warnings:
+                print(warning, file=sys.stderr)
 
             if self.debug:
                 print(f"[DEBUG] Generated {len(asm_code.splitlines())} lines of assembly", file=sys.stderr)

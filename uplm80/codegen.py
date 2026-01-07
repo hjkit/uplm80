@@ -107,9 +107,11 @@ class CodeGenerator:
     RESERVED_NAMES = {'A', 'B', 'C', 'D', 'E', 'H', 'L', 'M', 'SP', 'PSW',
                       'AF', 'BC', 'DE', 'HL', 'IX', 'IY', 'I', 'R'}
 
-    def __init__(self, target: Target = Target.Z80, mode: Mode = Mode.CPM) -> None:
+    def __init__(self, target: Target = Target.Z80, mode: Mode = Mode.CPM, warn_trivial_if: bool = True) -> None:
         self.target = target
         self.mode = mode
+        self.warn_trivial_if = warn_trivial_if  # Warn on IF 0 / IF 1
+        self.warnings: list[str] = []  # Collected warnings
         self.symbols = SymbolTable()
         self.output: list[AsmLine] = []
         self.label_counter = 0
@@ -182,6 +184,144 @@ class CodeGenerator:
                 except ValueError:
                     pass
         return None
+
+    def _try_eval_const(self, expr: Expr) -> int | None:
+        """Try to evaluate an expression as a compile-time constant.
+
+        Returns the integer value or None if not a constant.
+        Handles NumberLiteral, StringLiteral, LITERALLY macros, and UnaryExpr(NEG).
+        Values are returned as-is (may be negative or > 255).
+        """
+        if isinstance(expr, NumberLiteral):
+            return expr.value
+        elif isinstance(expr, StringLiteral):
+            if len(expr.value) == 1:
+                return ord(expr.value[0])
+            return None
+        elif isinstance(expr, Identifier):
+            if expr.name in self.literal_macros:
+                try:
+                    return self._parse_plm_number(self.literal_macros[expr.name])
+                except ValueError:
+                    pass
+        elif isinstance(expr, UnaryExpr):
+            if expr.op == UnaryOp.NEG:
+                operand_val = self._try_eval_const(expr.operand)
+                if operand_val is not None:
+                    # Return negative value (may be -1, -255, etc.)
+                    return -operand_val
+            elif expr.op == UnaryOp.NOT:
+                operand_val = self._try_eval_const(expr.operand)
+                if operand_val is not None:
+                    # Bitwise NOT - complement within 16 bits
+                    return (~operand_val) & 0xFFFF
+        elif isinstance(expr, BinaryExpr):
+            left_val = self._try_eval_const(expr.left)
+            right_val = self._try_eval_const(expr.right)
+            if left_val is not None and right_val is not None:
+                if expr.op == BinaryOp.ADD:
+                    return (left_val + right_val) & 0xFFFF
+                elif expr.op == BinaryOp.SUB:
+                    return (left_val - right_val) & 0xFFFF
+                elif expr.op == BinaryOp.AND:
+                    return left_val & right_val
+                elif expr.op == BinaryOp.OR:
+                    return left_val | right_val
+                elif expr.op == BinaryOp.XOR:
+                    return left_val ^ right_val
+        return None
+
+    def _check_impossible_comparison(self, left: Expr, right: Expr, op: BinaryOp) -> None:
+        """Check for comparisons that can never or always be true and raise an error.
+
+        Detects cases like:
+        - BYTE variable compared to -1 (where -1 as 16-bit is 0xFFFF, not 0xFF)
+        - BYTE variable compared to constants outside 0-255 range
+        """
+        left_type = self._get_expr_type(left)
+        right_val = self._try_eval_const(right)
+
+        if left_type == DataType.BYTE and right_val is not None:
+            # For BYTE comparisons, the value must be in 0-255 range
+            # Negative values like -1 become 0xFFFF (65535) in unsigned 16-bit
+            if right_val < 0:
+                # Negative constant - convert to unsigned 16-bit
+                unsigned_val = right_val & 0xFFFF
+            else:
+                unsigned_val = right_val
+
+            # Check if value is outside BYTE range
+            if unsigned_val > 255:
+                # This comparison is impossible or trivial
+                from .errors import CodeGenError, SourceLocation
+                loc = None
+                if hasattr(right, 'span') and right.span:
+                    loc = SourceLocation(right.span.start_line, right.span.start_col)
+
+                if op == BinaryOp.EQ:
+                    msg = f"comparison BYTE = {right_val} is always false (BYTE can only hold 0-255, {right_val} as 16-bit is {unsigned_val})"
+                elif op == BinaryOp.NE:
+                    msg = f"comparison BYTE <> {right_val} is always true (BYTE can only hold 0-255, {right_val} as 16-bit is {unsigned_val})"
+                elif op == BinaryOp.LT:
+                    msg = f"comparison BYTE < {right_val} is always true (BYTE can only hold 0-255)"
+                elif op == BinaryOp.LE:
+                    msg = f"comparison BYTE <= {right_val} is always true (BYTE can only hold 0-255)"
+                elif op == BinaryOp.GT:
+                    msg = f"comparison BYTE > {right_val} is always false (BYTE can only hold 0-255)"
+                elif op == BinaryOp.GE:
+                    msg = f"comparison BYTE >= {right_val} is always false (BYTE can only hold 0-255)"
+                else:
+                    return  # Unknown comparison operator
+
+                raise CodeGenError(msg, loc)
+
+    def _check_trivial_condition(self, condition: Expr, context: str = "condition") -> None:
+        """Check for trivial constant conditions and raise an error.
+
+        Detects cases like:
+        - DO WHILE 1 (always true - infinite loop)
+        - DO WHILE 0 (never executes)
+        """
+        const_val = self._try_eval_const(condition)
+        if const_val is not None:
+            from .errors import CodeGenError, SourceLocation
+            loc = None
+            if hasattr(condition, 'span') and condition.span:
+                loc = SourceLocation(condition.span.start_line, condition.span.start_col)
+
+            if const_val == 0:
+                msg = f"{context} is always false (constant 0)"
+            else:
+                msg = f"{context} is always true (constant {const_val})"
+
+            raise CodeGenError(msg, loc)
+
+    def _warn_trivial_if(self, condition: Expr) -> None:
+        """Emit a warning for trivial IF conditions (IF 0, IF 1).
+
+        Unlike DO WHILE, trivial IF conditions don't cause infinite loops
+        so they're only warnings, not errors.
+        """
+        if not self.warn_trivial_if:
+            return
+
+        const_val = self._try_eval_const(condition)
+        if const_val is not None:
+            from .errors import SourceLocation
+            loc = None
+            if hasattr(condition, 'span') and condition.span:
+                loc = SourceLocation(condition.span.start_line, condition.span.start_col)
+
+            if const_val == 0:
+                msg = f"IF condition is always false (constant 0)"
+            else:
+                msg = f"IF condition is always true (constant {const_val})"
+
+            if loc:
+                warning = f"{loc}: warning: {msg}"
+            else:
+                warning = f"warning: {msg}"
+            self.warnings.append(warning)
 
     # ========================================================================
     # Loop Index Usage Analysis
@@ -2292,6 +2432,9 @@ class CodeGenerator:
 
     def _gen_if(self, stmt: IfStmt) -> None:
         """Generate code for IF statement."""
+        # Warn about trivial constant conditions (IF 0, IF 1)
+        self._warn_trivial_if(stmt.condition)
+
         else_label = self._new_label("ELSE")
         end_label = self._new_label("ENDIF")
         false_target = else_label if stmt.else_stmt else end_label
@@ -2385,6 +2528,9 @@ class CodeGenerator:
 
         if op not in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT, BinaryOp.LE, BinaryOp.GE):
             return False
+
+        # Check for impossible comparisons (e.g., BYTE compared to -1)
+        self._check_impossible_comparison(condition.left, condition.right, op)
 
         # Check if both operands are bytes for optimized comparison
         left_type = self._get_expr_type(condition.left)
@@ -2543,6 +2689,9 @@ class CodeGenerator:
 
         if op not in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT, BinaryOp.LE, BinaryOp.GE):
             return False
+
+        # Check for impossible comparisons (e.g., BYTE compared to -1)
+        self._check_impossible_comparison(condition.left, condition.right, op)
 
         # Check if both operands are bytes for optimized comparison
         left_type = self._get_expr_type(condition.left)
@@ -2799,6 +2948,9 @@ class CodeGenerator:
 
     def _gen_do_while(self, stmt: DoWhileBlock) -> None:
         """Generate code for DO WHILE block."""
+        # Note: DO WHILE 1 is a valid pattern (loop exits in middle via RETURN/GOTO)
+        # We only error on impossible comparisons like BYTE <> -1
+
         loop_label = self._new_label("WHILE")
         end_label = self._new_label("WEND")
 
@@ -4205,6 +4357,10 @@ class CodeGenerator:
         if op in (BinaryOp.EQ, BinaryOp.NE) and left_type == DataType.ADDRESS:
             if isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
                 return self._gen_addr_zero_comparison(expr.left, op)
+
+        # Check for impossible comparisons (e.g., BYTE compared to -1)
+        if op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT, BinaryOp.LE, BinaryOp.GE):
+            self._check_impossible_comparison(expr.left, expr.right, op)
 
         # Special case: byte comparison with constant - use cp n
         if op in (BinaryOp.EQ, BinaryOp.NE, BinaryOp.LT, BinaryOp.GT,

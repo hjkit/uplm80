@@ -1,0 +1,265 @@
+/*
+ * BUG: BYTE procedure returning result of calling another BYTE procedure
+ *
+ * Bug: uplm80 generates incorrect code for BYTE procedures that return the
+ * result of calling another BYTE procedure. Instead of returning the actual
+ * byte value, it converts non-zero to 0xFF (boolean conversion).
+ *
+ * This broke BDOS semantics where open_file returns 0-3 for "found" and
+ * 0xFF for "not found".
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/bug_byte_proc_return.plm -o tests/build/bug_byte_proc_return.mac
+ *   um80 tests/build/bug_byte_proc_return.mac -o tests/build/bug_byte_proc_return.rel
+ *   ul80 -o tests/build/bug_byte_proc_return.com tests/build/bug_byte_proc_return.rel
+ *   cpmemu tests/build/bug_byte_proc_return.com
+ *
+ * EXPECTED OUTPUT:
+ * BYTE Proc Return Tests
+ * ======================
+ *
+ * Direct returns:
+ * ret0 0
+ * ret1 1
+ * ret2 2
+ * ret3 3
+ * ret255 255
+ *
+ * Wrapped returns:
+ * wrap0 0
+ * wrap1 1
+ * wrap2 2
+ * wrap3 3
+ * wrap255 255
+ *
+ * Chained returns:
+ * chain0 0
+ * chain1 1
+ * chain2 2
+ * chain3 3
+ * chain255 255
+ *
+ * BDOS semantics (0-3=found, 255=not found):
+ * found0 0
+ * found1 1
+ * found2 2
+ * found3 3
+ * notfound 255
+ *
+ * Done.
+ */
+
+0100H:
+
+TEST$BYTE$PROC$RETURN:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * BYTE PROCEDURE RETURN TESTS
+ * ================================================================ */
+
+/* Simple BYTE procedure that returns a specific value */
+RETURN$ZERO: PROCEDURE BYTE;
+    RETURN 0;
+END RETURN$ZERO;
+
+RETURN$ONE: PROCEDURE BYTE;
+    RETURN 1;
+END RETURN$ONE;
+
+RETURN$TWO: PROCEDURE BYTE;
+    RETURN 2;
+END RETURN$TWO;
+
+RETURN$THREE: PROCEDURE BYTE;
+    RETURN 3;
+END RETURN$THREE;
+
+RETURN$255: PROCEDURE BYTE;
+    RETURN 255;
+END RETURN$255;
+
+/* Wrapper BYTE procedure that returns the result of calling another BYTE procedure */
+/* BUG: These used to convert non-zero to 0xFF (boolean conversion) */
+WRAP$ZERO: PROCEDURE BYTE;
+    RETURN RETURN$ZERO;
+END WRAP$ZERO;
+
+WRAP$ONE: PROCEDURE BYTE;
+    RETURN RETURN$ONE;
+END WRAP$ONE;
+
+WRAP$TWO: PROCEDURE BYTE;
+    RETURN RETURN$TWO;
+END WRAP$TWO;
+
+WRAP$THREE: PROCEDURE BYTE;
+    RETURN RETURN$THREE;
+END WRAP$THREE;
+
+WRAP$255: PROCEDURE BYTE;
+    RETURN RETURN$255;
+END WRAP$255;
+
+/* Triple-chained BYTE procedure */
+CHAIN$ZERO: PROCEDURE BYTE;
+    RETURN WRAP$ZERO;
+END CHAIN$ZERO;
+
+CHAIN$ONE: PROCEDURE BYTE;
+    RETURN WRAP$ONE;
+END CHAIN$ONE;
+
+CHAIN$TWO: PROCEDURE BYTE;
+    RETURN WRAP$TWO;
+END CHAIN$TWO;
+
+CHAIN$THREE: PROCEDURE BYTE;
+    RETURN WRAP$THREE;
+END CHAIN$THREE;
+
+CHAIN$255: PROCEDURE BYTE;
+    RETURN WRAP$255;
+END CHAIN$255;
+
+/* Simulate BDOS open_file semantics: 0-3 means found (directory entry), 255 means not found */
+INNER$OPEN: PROCEDURE(ENTRY) BYTE;
+    DECLARE ENTRY BYTE;
+    IF ENTRY < 4 THEN
+        RETURN ENTRY;  /* Found at entry 0, 1, 2, or 3 */
+    RETURN 255;        /* Not found */
+END INNER$OPEN;
+
+/* Wrapper like a real open_file might be implemented */
+OPEN$FILE: PROCEDURE(ENTRY) BYTE;
+    DECLARE ENTRY BYTE;
+    RETURN INNER$OPEN(ENTRY);  /* BUG: This used to boolean-convert the result */
+END OPEN$FILE;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    DECLARE RESULT BYTE;
+
+    CALL PRINT$STR(.'BYTE Proc Return Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'======================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    /* Test direct returns */
+    CALL PRINT$STR(.'Direct returns:$');
+    CALL CRLF;
+    CALL PRINT$TEST(.'ret0$', RETURN$ZERO);
+    CALL PRINT$TEST(.'ret1$', RETURN$ONE);
+    CALL PRINT$TEST(.'ret2$', RETURN$TWO);
+    CALL PRINT$TEST(.'ret3$', RETURN$THREE);
+    CALL PRINT$TEST(.'ret255$', RETURN$255);
+    CALL CRLF;
+
+    /* Test wrapped returns - these were buggy */
+    CALL PRINT$STR(.'Wrapped returns:$');
+    CALL CRLF;
+    CALL PRINT$TEST(.'wrap0$', WRAP$ZERO);
+    CALL PRINT$TEST(.'wrap1$', WRAP$ONE);        /* BUG: was returning 255 */
+    CALL PRINT$TEST(.'wrap2$', WRAP$TWO);        /* BUG: was returning 255 */
+    CALL PRINT$TEST(.'wrap3$', WRAP$THREE);      /* BUG: was returning 255 */
+    CALL PRINT$TEST(.'wrap255$', WRAP$255);
+    CALL CRLF;
+
+    /* Test chained returns */
+    CALL PRINT$STR(.'Chained returns:$');
+    CALL CRLF;
+    CALL PRINT$TEST(.'chain0$', CHAIN$ZERO);
+    CALL PRINT$TEST(.'chain1$', CHAIN$ONE);      /* BUG: was returning 255 */
+    CALL PRINT$TEST(.'chain2$', CHAIN$TWO);      /* BUG: was returning 255 */
+    CALL PRINT$TEST(.'chain3$', CHAIN$THREE);    /* BUG: was returning 255 */
+    CALL PRINT$TEST(.'chain255$', CHAIN$255);
+    CALL CRLF;
+
+    /* Test BDOS-like semantics */
+    CALL PRINT$STR(.'BDOS semantics (0-3=found, 255=not found):$');
+    CALL CRLF;
+    RESULT = OPEN$FILE(0);
+    CALL PRINT$TEST(.'found0$', RESULT);
+    RESULT = OPEN$FILE(1);
+    CALL PRINT$TEST(.'found1$', RESULT);         /* BUG: was returning 255 */
+    RESULT = OPEN$FILE(2);
+    CALL PRINT$TEST(.'found2$', RESULT);         /* BUG: was returning 255 */
+    RESULT = OPEN$FILE(3);
+    CALL PRINT$TEST(.'found3$', RESULT);         /* BUG: was returning 255 */
+    RESULT = OPEN$FILE(99);
+    CALL PRINT$TEST(.'notfound$', RESULT);       /* Should be 255 */
+    CALL CRLF;
+
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$BYTE$PROC$RETURN;
+
+EOF

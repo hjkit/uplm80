@@ -1,0 +1,12 @@
+/* Minimal test for -1 comparison */
+0100H:
+TEST: DO;
+
+DECLARE X BYTE;
+DECLARE R BYTE;
+
+X = 255;
+IF X = -1 THEN R = 1; ELSE R = 0;
+
+END TEST;
+EOF

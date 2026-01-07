@@ -1,0 +1,240 @@
+/*
+ * BUG: BYTE variable compared to -1 never matches due to type promotion
+ *
+ * The expression:
+ *   DO WHILE (cntr := cntr - 1) <> -1;
+ *
+ * Where cntr is a BYTE variable. The issue is:
+ * 1. cntr is BYTE (0-255)
+ * 2. -1 might be promoted to ADDRESS (0xFFFF = 65535)
+ * 3. A BYTE can never equal 65535, so the condition is always true
+ * 4. The loop runs forever instead of stopping when cntr wraps to 255
+ *
+ * Expected behavior: -1 should be treated as 0xFF (255) when compared to BYTE
+ *
+ * BUILD:
+ *   python -m uplm80.compiler tests/bug_byte_minus1_compare.plm -o tests/build/bug_byte_minus1_compare.mac
+ *   um80 tests/build/bug_byte_minus1_compare.mac -o tests/build/bug_byte_minus1_compare.rel
+ *   ul80 -o tests/build/bug_byte_minus1_compare.com tests/build/bug_byte_minus1_compare.rel
+ *   cpmemu tests/build/bug_byte_minus1_compare.com
+ *
+ * EXPECTED OUTPUT:
+ * BYTE vs -1 Comparison Tests
+ * ===========================
+ *
+ * Direct -1 comparisons:
+ * 255=-1? 1
+ * 254=-1? 0
+ * 0=-1? 0
+ *
+ * 255<>-1? 0
+ * 254<>-1? 1
+ * 0<>-1? 1
+ *
+ * Countdown loop (cntr:=cntr-1) <> -1:
+ * start 3
+ * iter 2
+ * iter 1
+ * iter 0
+ * exit 255
+ * count 3
+ *
+ * DO WHILE cntr <> -1 (pre-decrement in body):
+ * iterations: 256
+ *
+ * Done.
+ */
+
+0100H:
+
+TEST$BYTE$MINUS1:
+DO;
+
+DECLARE CR LITERALLY '13';
+DECLARE LF LITERALLY '10';
+
+/* CP/M BDOS */
+MON1: PROCEDURE(FUNC, PARM) EXTERNAL;
+    DECLARE FUNC BYTE, PARM ADDRESS;
+END MON1;
+
+/* Print character */
+PRINT$CHAR: PROCEDURE(C);
+    DECLARE C BYTE;
+    CALL MON1(2, C);
+END PRINT$CHAR;
+
+/* Print string */
+PRINT$STR: PROCEDURE(S);
+    DECLARE S ADDRESS;
+    CALL MON1(9, S);
+END PRINT$STR;
+
+/* Print newline */
+CRLF: PROCEDURE;
+    CALL PRINT$CHAR(CR);
+    CALL PRINT$CHAR(LF);
+END CRLF;
+
+/* Print unsigned number */
+PRINT$NUM: PROCEDURE(N);
+    DECLARE N ADDRESS;
+    DECLARE BUFFER(6) BYTE;
+    DECLARE I BYTE;
+
+    IF N = 0 THEN DO;
+        CALL PRINT$CHAR('0');
+        RETURN;
+    END;
+
+    I = 0;
+    DO WHILE N > 0;
+        BUFFER(I) = (N MOD 10) + '0';
+        N = N / 10;
+        I = I + 1;
+    END;
+
+    DO WHILE I > 0;
+        I = I - 1;
+        CALL PRINT$CHAR(BUFFER(I));
+    END;
+END PRINT$NUM;
+
+/* Print test result */
+PRINT$TEST: PROCEDURE(NAME, VALUE);
+    DECLARE NAME ADDRESS;
+    DECLARE VALUE ADDRESS;
+    CALL PRINT$STR(NAME);
+    CALL PRINT$CHAR(' ');
+    CALL PRINT$NUM(VALUE);
+    CALL CRLF;
+END PRINT$TEST;
+
+/* ================================================================
+ * BYTE vs -1 COMPARISON TESTS
+ * ================================================================ */
+
+TEST$DIRECT$MINUS1: PROCEDURE;
+    DECLARE X BYTE;
+    DECLARE RESULT BYTE;
+
+    CALL PRINT$STR(.'Direct -1 comparisons:$');
+    CALL CRLF;
+
+    /* Test if 255 = -1 (should be TRUE = 1) */
+    X = 255;
+    IF X = -1 THEN RESULT = 1; ELSE RESULT = 0;
+    CALL PRINT$TEST(.'255=-1?$', RESULT);
+
+    /* Test if 254 = -1 (should be FALSE = 0) */
+    X = 254;
+    IF X = -1 THEN RESULT = 1; ELSE RESULT = 0;
+    CALL PRINT$TEST(.'254=-1?$', RESULT);
+
+    /* Test if 0 = -1 (should be FALSE = 0) */
+    X = 0;
+    IF X = -1 THEN RESULT = 1; ELSE RESULT = 0;
+    CALL PRINT$TEST(.'0=-1?$', RESULT);
+
+    CALL CRLF;
+
+    /* Test if 255 <> -1 (should be FALSE = 0) */
+    X = 255;
+    IF X <> -1 THEN RESULT = 1; ELSE RESULT = 0;
+    CALL PRINT$TEST(.'255<>-1?$', RESULT);
+
+    /* Test if 254 <> -1 (should be TRUE = 1) */
+    X = 254;
+    IF X <> -1 THEN RESULT = 1; ELSE RESULT = 0;
+    CALL PRINT$TEST(.'254<>-1?$', RESULT);
+
+    /* Test if 0 <> -1 (should be TRUE = 1) */
+    X = 0;
+    IF X <> -1 THEN RESULT = 1; ELSE RESULT = 0;
+    CALL PRINT$TEST(.'0<>-1?$', RESULT);
+
+    CALL CRLF;
+END TEST$DIRECT$MINUS1;
+
+TEST$COUNTDOWN$EMBEDDED: PROCEDURE;
+    DECLARE CNTR BYTE;
+    DECLARE COUNT ADDRESS;
+
+    CALL PRINT$STR(.'Countdown loop (cntr:=cntr-1) <> -1:$');
+    CALL CRLF;
+
+    /* Classic PL/M countdown pattern:
+     * Start at N, decrement, loop while not wrapped to 255 (-1 as byte)
+     * Should iterate N times (values N-1, N-2, ..., 1, 0)
+     * Exits when result is 255 (wrapped from 0-1 = 255 = -1)
+     */
+    CNTR = 3;
+    COUNT = 0;
+    CALL PRINT$TEST(.'start$', CNTR);
+
+    DO WHILE (CNTR := CNTR - 1) <> -1;
+        CALL PRINT$TEST(.'iter$', CNTR);
+        COUNT = COUNT + 1;
+        IF COUNT > 300 THEN DO;
+            /* Safety: prevent infinite loop if bug exists */
+            CALL PRINT$STR(.'ERROR: infinite loop!$');
+            CALL CRLF;
+            RETURN;
+        END;
+    END;
+
+    CALL PRINT$TEST(.'exit$', CNTR);   /* Should be 255 */
+    CALL PRINT$TEST(.'count$', COUNT); /* Should be 3 */
+    CALL CRLF;
+END TEST$COUNTDOWN$EMBEDDED;
+
+TEST$COUNTDOWN$FULL: PROCEDURE;
+    DECLARE CNTR BYTE;
+    DECLARE COUNT ADDRESS;
+
+    CALL PRINT$STR(.'DO WHILE cntr <> -1 (pre-decrement in body):$');
+    CALL CRLF;
+
+    /* Count 256 iterations: 255, 254, ..., 1, 0, then exit when cntr = 255 */
+    CNTR = 0;
+    COUNT = 0;
+
+    DO WHILE CNTR <> -1;
+        COUNT = COUNT + 1;
+        CNTR = CNTR - 1;  /* Will wrap 0 -> 255 which equals -1 */
+        IF COUNT > 300 THEN DO;
+            /* Safety: prevent infinite loop if bug exists */
+            CALL PRINT$STR(.'ERROR: infinite loop!$');
+            CALL CRLF;
+            RETURN;
+        END;
+    END;
+
+    CALL PRINT$TEST(.'iterations:$', COUNT); /* Should be 256 */
+    CALL CRLF;
+END TEST$COUNTDOWN$FULL;
+
+/* ================================================================
+ * MAIN
+ * ================================================================ */
+
+MAIN: PROCEDURE;
+    CALL PRINT$STR(.'BYTE vs -1 Comparison Tests$');
+    CALL CRLF;
+    CALL PRINT$STR(.'===========================$');
+    CALL CRLF;
+    CALL CRLF;
+
+    CALL TEST$DIRECT$MINUS1;
+    CALL TEST$COUNTDOWN$EMBEDDED;
+    CALL TEST$COUNTDOWN$FULL;
+
+    CALL PRINT$STR(.'Done.$');
+    CALL CRLF;
+END MAIN;
+
+CALL MAIN;
+
+END TEST$BYTE$MINUS1;
+
+EOF
