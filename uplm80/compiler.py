@@ -120,7 +120,7 @@ class Compiler:
                     file=sys.stderr,
                 )
 
-            codegen = CodeGenerator(self.target, self.mode)
+            codegen = CodeGenerator(self.target, self.mode, reg_debug=self.debug)
             asm_code = codegen.generate(ast)
 
             # Print any warnings from code generation
@@ -246,7 +246,7 @@ class Compiler:
             if self.debug:
                 print(f"[DEBUG] Phase 4: Code Generation (multi-module, {len(modules)} files)", file=sys.stderr)
 
-            codegen = CodeGenerator(self.target, self.mode)
+            codegen = CodeGenerator(self.target, self.mode, reg_debug=self.debug)
             asm_code = codegen.generate_multi(modules)
 
             # Print any warnings from code generation

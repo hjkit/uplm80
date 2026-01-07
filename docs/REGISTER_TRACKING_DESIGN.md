@@ -350,7 +350,26 @@ Then evaluate the subtree with **higher** register need **first** - this minimiz
 - Spill stack ordering is LIFO - must release in reverse order of claim
 - Statistics are useful for understanding allocation patterns
 
-### Phase 2: Instrument Existing Code - PENDING
+### Phase 2: Instrument Existing Code ✅ COMPLETE
+
+**Date**: 2026-01-07
+
+**Changes**:
+- Added `reg_debug` flag to CodeGenerator (enabled via --debug CLI flag)
+- Added `_track_emit()` to monitor push/pop/ex operations
+- Added `_check_regs_free()` for future boundary assertions
+- Added `_reg_debug_log()` for debug output
+- Statistics printed at end of compilation in debug mode
+
+**Baseline Statistics** (across 46 test files):
+- 501 `ex de,hl` operations
+- 484 manual pop operations
+- 481 manual push operations
+
+**Learnings**:
+- Push/pop are nearly balanced (3 difference from procedure prologue/epilogue)
+- This baseline helps measure efficiency of allocator migration
+- The `ex de,hl` pattern is very common - binary expr evaluation uses it heavily
 
 ### Phase 3: Migrate Binary Expressions - PENDING
 

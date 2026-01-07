@@ -309,10 +309,11 @@ class CodeGenerator:
     RESERVED_NAMES = {'A', 'B', 'C', 'D', 'E', 'H', 'L', 'M', 'SP', 'PSW',
                       'AF', 'BC', 'DE', 'HL', 'IX', 'IY', 'I', 'R'}
 
-    def __init__(self, target: Target = Target.Z80, mode: Mode = Mode.CPM, warn_trivial_if: bool = True) -> None:
+    def __init__(self, target: Target = Target.Z80, mode: Mode = Mode.CPM, warn_trivial_if: bool = True, reg_debug: bool = False) -> None:
         self.target = target
         self.mode = mode
         self.warn_trivial_if = warn_trivial_if  # Warn on IF 0 / IF 1
+        self.reg_debug = reg_debug  # Enable register tracking debug output
         self.warnings: list[str] = []  # Collected warnings
         self.symbols = SymbolTable()
         self.output: list[AsmLine] = []
@@ -1097,6 +1098,64 @@ class CodeGenerator:
         """Emit an assembly line."""
         self.output.append(AsmLine(label, opcode, operands, comment))
 
+        # Track register operations for debugging
+        if self.reg_debug:
+            self._track_emit(opcode, operands)
+
+    def _track_emit(self, opcode: str, operands: str) -> None:
+        """Track register state changes from emitted instructions (debug mode)."""
+        op = opcode.lower()
+        ops = operands.lower()
+
+        # Track push/pop for manual spill detection
+        if op == "push":
+            reg = ops.replace("af", "a")  # Normalize af->a
+            if reg in ('a', 'hl', 'de', 'bc', 'ix'):
+                self.regs.stats['manual_push'] = self.regs.stats.get('manual_push', 0) + 1
+
+        elif op == "pop":
+            reg = ops.replace("af", "a")
+            if reg in ('a', 'hl', 'de', 'bc', 'ix'):
+                self.regs.stats['manual_pop'] = self.regs.stats.get('manual_pop', 0) + 1
+
+        # Track loads that set result registers
+        elif op == "ld":
+            if ops.startswith("hl,") or ops.startswith("a,"):
+                pass  # Result register being set
+            elif ops.startswith("de,") or ops.startswith("bc,"):
+                pass  # Secondary register being set
+
+        # Track exchange
+        elif op == "ex" and ops == "de,hl":
+            self.regs.stats['ex_de_hl'] = self.regs.stats.get('ex_de_hl', 0) + 1
+
+    def _check_regs_free(self, context: str) -> None:
+        """Assert that all registers are free (debug mode only).
+
+        Called at statement boundaries to detect register leaks.
+        """
+        if not self.reg_debug:
+            return
+
+        # Check if any registers are still marked busy
+        busy_regs = []
+        for reg in ['a', 'hl', 'de', 'bc']:  # Don't check IX - used for frame
+            desc = self.regs.get_reg(reg)
+            if desc.state != RegState.FREE:
+                busy_regs.append(f"{reg.upper()}({desc.owner})")
+
+        if busy_regs:
+            # Log warning but don't fail - existing code doesn't use allocator yet
+            import sys
+            print(f"[REG DEBUG] {context}: busy registers: {', '.join(busy_regs)}",
+                  file=sys.stderr)
+
+    def _reg_debug_log(self, msg: str) -> None:
+        """Log a register debug message."""
+        if self.reg_debug:
+            import sys
+            print(f"[REG DEBUG] {msg}", file=sys.stderr)
+
     def _emit_label(self, label: str) -> None:
         """Emit a label."""
         self.output.append(AsmLine(label=label))
@@ -1406,6 +1465,13 @@ class CodeGenerator:
         # End directive
         self._emit()
         self._emit("end")
+
+        # Print register statistics in debug mode
+        if self.reg_debug and self.regs.stats:
+            import sys
+            print(f"[REG DEBUG] Statistics for {module.name}:", file=sys.stderr)
+            for key, val in sorted(self.regs.stats.items()):
+                print(f"  {key}: {val}", file=sys.stderr)
 
         # Convert to string
         return "\n".join(str(line) for line in self.output)
