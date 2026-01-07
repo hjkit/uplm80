@@ -3300,7 +3300,8 @@ class CodeGenerator:
             sym = self.symbols.lookup(name)
             if sym and sym.kind != SymbolKind.PROCEDURE:
                 return True
-            return True  # Assume simple
+            # Procedures are not simple - they need to be called
+            return False
         if isinstance(expr, LocationExpr):
             # .VAR is simple - just loads address, unless it's a stack-based variable
             if isinstance(expr.operand, Identifier):
