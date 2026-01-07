@@ -4042,6 +4042,58 @@ class CodeGenerator:
                             self._emit("ld", "(hl),a")  # Store value
                     return
 
+            # Check if this is a member array subscript: struct.member(idx)
+            if isinstance(expr.callee, MemberExpr) and len(expr.args) == 1:
+                member_expr = expr.callee
+                idx_expr = expr.args[0]
+                _, member_type = self._get_member_info(member_expr)
+                elem_size = 2 if member_type == DataType.ADDRESS else 1
+
+                # Save value, compute address, then store based on ELEMENT type (not value type)
+                if member_type == DataType.ADDRESS:
+                    # ADDRESS array member - store 16-bit
+                    if val_type == DataType.BYTE:
+                        self._emit("ld", "l,a")
+                        self._emit("ld", "h,0")
+                    self._emit("push", "hl")  # Save value
+                    self._gen_member_addr(member_expr)
+                    # Add index offset
+                    if isinstance(idx_expr, NumberLiteral):
+                        self._emit_add_hl_const(idx_expr.value * elem_size)
+                    else:
+                        self._emit("push", "hl")
+                        idx_type = self._gen_expr(idx_expr)
+                        if idx_type == DataType.BYTE:
+                            self._emit("ld", "l,a")
+                            self._emit("ld", "h,0")
+                        self._emit("add", "hl,hl")  # *2 for ADDRESS elements
+                        self._emit("pop", "de")
+                        self._emit("add", "hl,de")
+                    self._emit("pop", "de")  # DE = value
+                    self._emit("ld", "(hl),e")
+                    self._emit("inc", "hl")
+                    self._emit("ld", "(hl),d")
+                else:
+                    # BYTE array member - store 8-bit only
+                    if val_type != DataType.BYTE:
+                        self._emit("ld", "a,l")  # Get low byte from ADDRESS value
+                    self._emit("push", "af")  # Save value on stack
+                    self._gen_member_addr(member_expr)
+                    # Add index offset
+                    if isinstance(idx_expr, NumberLiteral):
+                        self._emit_add_hl_const(idx_expr.value)
+                    else:
+                        self._emit("push", "hl")
+                        idx_type = self._gen_expr(idx_expr)
+                        if idx_type == DataType.BYTE:
+                            self._emit("ld", "l,a")
+                            self._emit("ld", "h,0")
+                        self._emit("pop", "de")
+                        self._emit("add", "hl,de")
+                    self._emit("pop", "af")  # Restore value to A
+                    self._emit("ld", "(hl),a")  # Store single byte
+                return
+
             # Unknown call target - fall through to complex store
             self._emit("push", "hl")
             self._gen_location(LocationExpr(operand=expr))
