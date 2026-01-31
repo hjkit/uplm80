@@ -5,7 +5,7 @@
 [![Pylint](https://github.com/avwohl/uplm80/actions/workflows/pylint.yml/badge.svg)](https://github.com/avwohl/uplm80/actions/workflows/pylint.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
-A modern PL/M-80 compiler targeting Intel 8080 and Zilog Z80 assembly language.
+A modern PL/M-80 compiler targeting Zilog Z80 assembly language.
 
 PL/M-80 was the primary systems programming language for CP/M and other 8080/Z80 operating systems. This compiler can rebuild original CP/M utilities from their PL/M source code.
 
@@ -14,7 +14,7 @@ PL/M-80 was the primary systems programming language for CP/M and other 8080/Z80
 ## Features
 
 - Full PL/M-80 language support
-- Targets both 8080 and Z80 instruction sets
+- Targets both Z80 instruction sets
 - Multi-file compilation with cross-module optimization
 - Multiple optimization passes (peephole, post-assembly tail merging)
 - Generates relocatable object files compatible with standard CP/M linkers
@@ -89,7 +89,7 @@ This produces better code than compiling files separately, as the compiler can s
 
 ### Assemble and Link
 
-Use your preferred 8080/Z80 assembler and linker. Example with um80/ul80:
+Use your preferred Z80 assembler and linker. Example with um80/ul80:
 
 ```bash
 um80 output.mac                              # Assemble to .rel
