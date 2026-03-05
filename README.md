@@ -14,7 +14,7 @@ PL/M-80 was the primary systems programming language for CP/M and other 8080/Z80
 ## Features
 
 - Full PL/M-80 language support
-- Targets both Z80 instruction sets
+- Targets Z80 instruction
 - Multi-file compilation with cross-module optimization
 - Multiple optimization passes (peephole, post-assembly tail merging)
 - Generates relocatable object files compatible with standard CP/M linkers
